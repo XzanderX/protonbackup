@@ -24,7 +24,7 @@ final class WindowManager {
             id: "setup-wizard",
             title: "Proton Backup Setup",
             size: NSSize(width: 600, height: 500),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable],
             content: {
                 guard let appState else { return AnyView(EmptyView()) }
                 return AnyView(

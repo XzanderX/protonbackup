@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let log = LogService.shared
 
+        // Ensure the app can receive keyboard/mouse input even when running via `swift run`
+        // (LSUIElement apps need this to properly activate windows)
+        NSApp.setActivationPolicy(.accessory)
+
         log.log(.info, category: .app, message: "applicationDidFinishLaunching")
         log.log(.info, category: .app, message: "WindowManager.appState is \(WindowManager.shared.appState == nil ? "nil" : "set")")
 
