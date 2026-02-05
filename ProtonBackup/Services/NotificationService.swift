@@ -2,11 +2,20 @@ import Foundation
 import UserNotifications
 
 /// Manages macOS user notifications for backup events.
+/// Gracefully no-ops when running outside a .app bundle (e.g. via `swift run`),
+/// since UNUserNotificationCenter requires a bundle proxy.
 final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     static let shared = NotificationService()
 
-    private let center = UNUserNotificationCenter.current()
+    /// Whether notifications are available (requires a .app bundle).
+    private let isAvailable: Bool
+
+    /// Lazily resolved notification center — only accessed when isAvailable is true.
+    private var center: UNUserNotificationCenter? {
+        guard isAvailable else { return nil }
+        return UNUserNotificationCenter.current()
+    }
 
     /// Notification action identifiers.
     private enum ActionID {
@@ -25,15 +34,23 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     var onOpenLogRequested: (() -> Void)?
 
     private override init() {
+        // UNUserNotificationCenter.current() crashes outside a .app bundle.
+        // Detect this early and disable notifications when running via swift run.
+        self.isAvailable = Bundle.main.bundleIdentifier != nil
         super.init()
-        center.delegate = self
-        registerCategories()
+
+        if isAvailable {
+            let c = UNUserNotificationCenter.current()
+            c.delegate = self
+            registerCategories(center: c)
+        }
     }
 
     // MARK: - Public API
 
     /// Request notification permission.
     func requestPermission() async -> Bool {
+        guard let center else { return false }
         do {
             return try await center.requestAuthorization(options: [.alert, .sound, .badge])
         } catch {
@@ -43,6 +60,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// Send a notification that backup completed successfully.
     func notifyBackupComplete(summary: BackupSummary) {
+        guard let center else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Backup Complete"
         content.body = summary.displayText
@@ -60,6 +79,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// Send a notification that backup failed.
     func notifyBackupFailed(errorMessage: String) {
+        guard let center else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Backup Failed"
         content.body = errorMessage
@@ -77,6 +98,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     /// Send a notification that the destination drive was connected.
     func notifyDestinationConnected(volumeName: String) {
+        guard let center else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Backup Drive Connected"
         content.body = "\(volumeName) is now available. Checking for changes…"
@@ -117,7 +140,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - Private
 
-    private func registerCategories() {
+    private func registerCategories(center: UNUserNotificationCenter) {
         let openLogAction = UNNotificationAction(
             identifier: ActionID.openLog,
             title: "Open Log",
