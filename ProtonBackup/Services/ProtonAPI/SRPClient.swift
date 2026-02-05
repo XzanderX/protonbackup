@@ -130,7 +130,7 @@ final class SRPClient {
     private static func expandedHash(_ password: Data, salt: Data) -> Data {
         // Use PBKDF2 with SHA-512
         var derivedKey = [UInt8](repeating: 0, count: 32)
-        password.withUnsafeBytes { passwordBuffer in
+        _ = password.withUnsafeBytes { passwordBuffer in
             salt.withUnsafeBytes { saltBuffer in
                 CCKeyDerivationPBKDF(
                     CCPBKDFAlgorithm(kCCPBKDF2),

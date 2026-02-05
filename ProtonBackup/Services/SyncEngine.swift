@@ -44,7 +44,7 @@ final class SyncEngine {
         let startTime = Date()
         var filesUpdated = 0
         var filesDeleted = 0
-        var filesSkipped = 0
+        let filesSkipped = 0
         var errors: [String] = []
 
         logService.log(.info, category: .sync, message: "Starting full sync to \(mirrorPath)")

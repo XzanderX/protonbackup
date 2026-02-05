@@ -169,9 +169,8 @@ final class LogService: ObservableObject {
         guard let data = try? Data(contentsOf: Self.logFileURL),
               let content = String(data: data, encoding: .utf8) else { return }
 
-        let lines = content.components(separatedBy: "\n").suffix(1000)
-        // We don't parse them back into BackupLogEntry structs since they're
-        // already written. The in-memory entries start fresh each launch,
-        // which is the expected behavior. The file log persists across launches.
+        // The in-memory entries start fresh each launch.
+        // The file log persists across launches for diagnostics export.
+        _ = content.components(separatedBy: "\n").suffix(1000)
     }
 }

@@ -121,7 +121,7 @@ final class DriveMonitor {
 
     // MARK: - Callbacks
 
-    private func handleDiskAppeared(disk: DADisk) {
+    fileprivate func handleDiskAppeared(disk: DADisk) {
         guard let description = DADiskCopyDescription(disk) as? [String: Any] else { return }
 
         let volumeName = description[kDADiskDescriptionVolumeNameKey as String] as? String ?? "Unknown"
@@ -154,7 +154,7 @@ final class DriveMonitor {
         }
     }
 
-    private func handleDiskDisappeared(disk: DADisk) {
+    fileprivate func handleDiskDisappeared(disk: DADisk) {
         guard let description = DADiskCopyDescription(disk) as? [String: Any] else { return }
 
         let volumeName = description[kDADiskDescriptionVolumeNameKey as String] as? String ?? "Unknown"

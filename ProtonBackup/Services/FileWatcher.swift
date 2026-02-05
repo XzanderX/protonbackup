@@ -47,7 +47,7 @@ final class FileWatcher {
         }
 
         self.stream = stream
-        FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
         FSEventStreamStart(stream)
 
         logService.log(.info, category: .fileWatcher, message: "Watching \(path) for changes")
