@@ -49,6 +49,11 @@ final class AppState: ObservableObject {
         setupDriveMonitor()
         setupFileWatcher()
 
+        // Wire self to WindowManager so it can create windows with appState
+        WindowManager.shared.appState = self
+
+        logService.log(.info, category: .app, message: "AppState initialized, setupCompleted=\(config.setupCompleted)")
+
         if config.setupCompleted {
             startOperations()
         }

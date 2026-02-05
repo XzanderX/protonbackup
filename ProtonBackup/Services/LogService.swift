@@ -16,13 +16,22 @@ final class LogService: ObservableObject {
     /// System logger for os_log integration.
     private let osLogger = Logger(subsystem: "com.protonbackup.app", category: "backup")
 
+    /// Whether to also print to stderr (visible in Terminal via `make run`).
+    /// Enabled when running outside an app bundle (i.e. via swift run / make run).
+    let printToTerminal: Bool
+
     /// File handle for the log file.
     private var logFileHandle: FileHandle?
     private let logQueue = DispatchQueue(label: "com.protonbackup.log", qos: .utility)
 
     private init() {
+        // Detect if running from a terminal (not inside a .app bundle)
+        self.printToTerminal = Bundle.main.bundlePath.hasSuffix(".app") == false
         openLogFile()
         loadRecentEntries()
+        if printToTerminal {
+            fputs("[ProtonBackup] Log service started. Log file: \(Self.logFileURL.path)\n", stderr)
+        }
     }
 
     deinit {
@@ -44,6 +53,11 @@ final class LogService: ObservableObject {
             message: message,
             filePath: filePath
         )
+
+        // Print to terminal (stderr) when running via `make run` or `swift run`
+        if printToTerminal {
+            fputs("[ProtonBackup] \(entry.displayLine)\n", stderr)
+        }
 
         // Write to os_log
         switch level {

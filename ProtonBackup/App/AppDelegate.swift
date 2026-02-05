@@ -5,11 +5,23 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Give SwiftUI a moment to set up, then check if we need the wizard
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        let log = LogService.shared
+
+        log.log(.info, category: .app, message: "applicationDidFinishLaunching")
+        log.log(.info, category: .app, message: "WindowManager.appState is \(WindowManager.shared.appState == nil ? "nil" : "set")")
+
+        // Give SwiftUI a moment to finish creating the @StateObject,
+        // then open the wizard if setup hasn't been completed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            log.log(.info, category: .app, message: "Checking setup status (delayed)…")
+            log.log(.info, category: .app, message: "WindowManager.appState is \(WindowManager.shared.appState == nil ? "nil" : "set")")
+
             let config = BackupConfiguration.load()
             if !config.setupCompleted {
+                log.log(.info, category: .app, message: "Setup not completed — opening wizard")
                 WindowManager.shared.showSetupWizard()
+            } else {
+                log.log(.info, category: .app, message: "Setup already completed — running in background")
             }
         }
     }
