@@ -1,0 +1,44 @@
+name: ProtonBackup
+options:
+  bundleIdPrefix: com.protonbackup
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  minimumXcodeGenVersion: "2.38.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  ProtonBackup:
+    type: application
+    platform: macOS
+    sources:
+      - ProtonBackup
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.protonbackup.app
+        PRODUCT_NAME: Proton Backup
+        INFOPLIST_FILE: ProtonBackup/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ProtonBackup/ProtonBackup.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+    info:
+      path: ProtonBackup/Info.plist
+    entitlements:
+      path: ProtonBackup/ProtonBackup.entitlements
+
+  ProtonBackupTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/ProtonBackupTests
+    dependencies:
+      - target: ProtonBackup
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.protonbackup.tests
