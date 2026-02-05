@@ -95,8 +95,7 @@ final class WindowManager {
     ) {
         // If the window already exists and is visible, just bring it forward
         if let existing = windows[id], existing.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
-            existing.makeKeyAndOrderFront(nil)
+            activateAndFocus(window: existing)
             return
         }
 
@@ -115,11 +114,30 @@ final class WindowManager {
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = WindowCloseDelegate.shared
+        window.acceptsMouseMovedEvents = true
 
         windows[id] = window
 
+        activateAndFocus(window: window)
+    }
+
+    private func activateAndFocus(window: NSWindow) {
+        // Temporarily switch to regular activation policy so the app can receive full focus
+        // This is necessary for LSUIElement (menu bar) apps to have interactive windows
+        NSApp.setActivationPolicy(.regular)
+
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(window.contentView)
+
+        // Switch back to accessory after a short delay to hide from Dock
+        // but keep the window interactive
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            // Only switch back if we still have windows open
+            if !self.windows.values.contains(where: { $0.isVisible }) {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 }
 
@@ -136,6 +154,14 @@ private class WindowCloseDelegate: NSObject, NSWindowDelegate {
             for (id, w) in manager.windows where w === window {
                 manager.windows.removeValue(forKey: id)
                 break
+            }
+
+            // Switch back to accessory mode when all windows are closed
+            // This hides the app from the Dock
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                if !manager.windows.values.contains(where: { $0.isVisible }) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
             }
         }
     }
