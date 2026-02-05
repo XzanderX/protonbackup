@@ -281,7 +281,6 @@ struct AccountSettingsView: View {
 
 struct AdvancedSettingsView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.openWindow) private var openWindow
 
     @State private var isExportingDiagnostics = false
     @State private var exportResult: String?
@@ -290,7 +289,7 @@ struct AdvancedSettingsView: View {
         Form {
             Section {
                 Button("Open Log Viewer") {
-                    openWindow(id: "log-viewer")
+                    WindowManager.shared.showLogViewer()
                 }
 
                 Button("Open Log File in Finder") {

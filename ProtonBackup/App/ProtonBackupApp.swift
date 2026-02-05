@@ -3,47 +3,33 @@ import SwiftUI
 @main
 struct ProtonBackupApp: App {
 
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState()
+
+    init() {
+        // Wire up the shared WindowManager so it can create windows with appState
+        // (actual assignment happens in body via .onAppear since appState is
+        //  not yet available at init time)
+    }
 
     var body: some Scene {
         // Menu bar extra (the primary interface)
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(appState)
+                .onAppear {
+                    // Ensure WindowManager has access to appState
+                    WindowManager.shared.appState = appState
+                }
         } label: {
             Image(systemName: appState.backupState.menuBarIconName)
         }
 
-        // Setup wizard window
-        Window("Proton Backup Setup", id: "setup-wizard") {
-            SetupWizardView()
-                .environmentObject(appState)
-                .frame(width: 600, height: 500)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        .defaultPosition(.center)
-
-        // Settings window
+        // Settings window (uses macOS native Settings scene)
         Settings {
             SettingsView()
                 .environmentObject(appState)
                 .frame(width: 500, height: 600)
         }
-
-        // Log viewer window
-        Window("Backup Log", id: "log-viewer") {
-            LogViewerView()
-                .environmentObject(appState)
-                .frame(minWidth: 600, minHeight: 400)
-        }
-
-        // Restore help window
-        Window("Restore Help", id: "restore-help") {
-            RestoreHelpView()
-                .environmentObject(appState)
-                .frame(width: 500, height: 450)
-        }
-        .windowResizability(.contentSize)
     }
 }

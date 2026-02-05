@@ -14,13 +14,6 @@ final class AppState: ObservableObject {
     @Published var isDestinationConnected: Bool = false
     @Published var destinationPath: String?
 
-    // MARK: - Windows
-
-    @Published var showSetupWizard: Bool = false
-    @Published var showSettings: Bool = false
-    @Published var showLogViewer: Bool = false
-    @Published var showRestoreHelp: Bool = false
-
     // MARK: - Services
 
     let logService = LogService.shared
@@ -58,9 +51,8 @@ final class AppState: ObservableObject {
 
         if config.setupCompleted {
             startOperations()
-        } else {
-            showSetupWizard = true
         }
+        // If not configured, AppDelegate will open the setup wizard
     }
 
     // MARK: - Setup
@@ -71,7 +63,7 @@ final class AppState: ObservableObject {
         self.config.setupCompleted = true
         saveConfig()
 
-        showSetupWizard = false
+        WindowManager.shared.closeWindow(id: "setup-wizard")
         startOperations()
     }
 
@@ -370,6 +362,6 @@ final class AppState: ObservableObject {
         saveConfig()
 
         backupState = .notConfigured
-        showSetupWizard = true
+        WindowManager.shared.showSetupWizard()
     }
 }

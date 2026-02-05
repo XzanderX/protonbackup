@@ -3,7 +3,6 @@ import SwiftUI
 /// The content of the menu bar dropdown.
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,26 +24,26 @@ struct MenuBarView: View {
 
             // Windows
             Button {
-                openWindow(id: "setup-wizard")
+                WindowManager.shared.showSetupWizard()
             } label: {
                 Label("Setup Wizard…", systemImage: "wand.and.stars")
             }
 
             Button {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                WindowManager.shared.showSettings()
             } label: {
                 Label("Settings…", systemImage: "gearshape")
             }
             .keyboardShortcut(",")
 
             Button {
-                openWindow(id: "log-viewer")
+                WindowManager.shared.showLogViewer()
             } label: {
                 Label("View Log…", systemImage: "doc.text")
             }
 
             Button {
-                openWindow(id: "restore-help")
+                WindowManager.shared.showRestoreHelp()
             } label: {
                 Label("Restore Help…", systemImage: "arrow.uturn.backward")
             }
