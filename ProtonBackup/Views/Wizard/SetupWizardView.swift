@@ -67,6 +67,7 @@ struct SetupWizardView: View {
             }
             .padding(20)
         }
+        .frame(width: 600, height: 500)
     }
 
     private func finishSetup() {

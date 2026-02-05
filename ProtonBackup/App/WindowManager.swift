@@ -101,6 +101,7 @@ final class WindowManager {
 
         let hostingView = NSHostingView(rootView: content())
         hostingView.frame = NSRect(origin: .zero, size: size)
+        hostingView.autoresizingMask = [.width, .height]
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),

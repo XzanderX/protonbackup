@@ -221,6 +221,11 @@ struct AccountSettingsView: View {
     @EnvironmentObject var appState: AppState
 
     @State private var showingSignOutConfirmation = false
+    @State private var showingLoginSheet = false
+    @State private var loginUsername = ""
+    @State private var loginPassword = ""
+    @State private var isLoggingIn = false
+    @State private var loginError: String?
 
     var body: some View {
         Form {
@@ -229,51 +234,130 @@ struct AccountSettingsView: View {
                     LabeledContent("Signed in as") {
                         Text(username)
                     }
+
+                    LabeledContent("Session") {
+                        Text(ProtonAuthService.shared.hasSession ? "Active" : "None")
+                            .foregroundColor(ProtonAuthService.shared.hasSession ? .statusGreen : .secondary)
+                    }
+
+                    Button("Test Connection") {
+                        Task {
+                            let success = try? await ProtonAuthService.shared.testConnection()
+                            if success == true {
+                                appState.logService.log(.info, category: .auth, message: "Connection test passed")
+                            } else {
+                                appState.logService.log(.warning, category: .auth, message: "Connection test failed")
+                            }
+                        }
+                    }
                 } else {
                     Text("Not signed in")
                         .foregroundColor(.secondary)
-                }
 
-                LabeledContent("Session") {
-                    Text(ProtonAuthService.shared.hasSession ? "Active" : "None")
-                        .foregroundColor(ProtonAuthService.shared.hasSession ? .statusGreen : .secondary)
-                }
-
-                Button("Test Connection") {
-                    Task {
-                        let success = try? await ProtonAuthService.shared.testConnection()
-                        if success == true {
-                            appState.logService.log(.info, category: .auth, message: "Connection test passed")
-                        } else {
-                            appState.logService.log(.warning, category: .auth, message: "Connection test failed")
-                        }
+                    Button("Sign In to Proton…") {
+                        showingLoginSheet = true
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.protonPurple)
                 }
             } header: {
                 Text("Proton Account")
             }
 
-            Section {
-                Button("Sign Out", role: .destructive) {
-                    showingSignOutConfirmation = true
-                }
-                .confirmationDialog(
-                    "Sign Out",
-                    isPresented: $showingSignOutConfirmation,
-                    titleVisibility: .visible
-                ) {
+            if KeychainService.shared.getUsername() != nil {
+                Section {
                     Button("Sign Out", role: .destructive) {
-                        Task {
-                            await appState.signOut()
-                        }
+                        showingSignOutConfirmation = true
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This will stop all backups and remove stored credentials. Your backup files will not be deleted.")
+                    .confirmationDialog(
+                        "Sign Out",
+                        isPresented: $showingSignOutConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Sign Out", role: .destructive) {
+                            Task {
+                                await appState.signOut()
+                            }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("This will stop all backups and remove stored credentials. Your backup files will not be deleted.")
+                    }
                 }
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showingLoginSheet) {
+            VStack(spacing: 20) {
+                Text("Sign In to Proton")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Email or username", text: $loginUsername)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.username)
+
+                    SecureField("Password", text: $loginPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.password)
+                }
+
+                if let error = loginError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+
+                HStack {
+                    Button("Cancel") {
+                        showingLoginSheet = false
+                        loginUsername = ""
+                        loginPassword = ""
+                        loginError = nil
+                    }
+
+                    Spacer()
+
+                    Button("Sign In") {
+                        performLogin()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.protonPurple)
+                    .disabled(loginUsername.isEmpty || loginPassword.isEmpty || isLoggingIn)
+                }
+            }
+            .padding(30)
+            .frame(width: 350)
+        }
+    }
+
+    private func performLogin() {
+        isLoggingIn = true
+        loginError = nil
+
+        Task {
+            do {
+                try await ProtonAuthService.shared.login(
+                    username: loginUsername,
+                    password: loginPassword
+                )
+                KeychainService.shared.saveUsername(loginUsername)
+                appState.logService.log(.info, category: .auth, message: "Signed in as \(loginUsername)")
+
+                await MainActor.run {
+                    showingLoginSheet = false
+                    loginUsername = ""
+                    loginPassword = ""
+                    isLoggingIn = false
+                }
+            } catch {
+                await MainActor.run {
+                    loginError = error.localizedDescription
+                    isLoggingIn = false
+                }
+            }
+        }
     }
 }
 
