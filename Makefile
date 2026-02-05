@@ -28,9 +28,13 @@ generate-xcodeproj:
 # Package as .app bundle
 package: release
 	@echo "Creating app bundle..."
+	@rm -rf build/ProtonBackup.app
 	@mkdir -p build/ProtonBackup.app/Contents/MacOS
 	@mkdir -p build/ProtonBackup.app/Contents/Resources
 	@cp .build/release/ProtonBackup build/ProtonBackup.app/Contents/MacOS/
 	@cp ProtonBackup/Info.plist build/ProtonBackup.app/Contents/
+	@echo "Ad-hoc signing app bundle..."
+	@codesign --force --deep --sign - build/ProtonBackup.app
 	@echo "App bundle created at build/ProtonBackup.app"
-	@echo "Note: For distribution, sign with: codesign --deep --force --sign 'Developer ID' build/ProtonBackup.app"
+	@echo "To open: open build/ProtonBackup.app"
+	@echo "For distribution, re-sign with: codesign --deep --force --sign 'Developer ID Application: ...' build/ProtonBackup.app"
