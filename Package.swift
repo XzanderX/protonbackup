@@ -15,6 +15,10 @@ let package = Package(
             name: "ProtonBackup",
             dependencies: [],
             path: "ProtonBackup",
+            exclude: [
+                "Info.plist",
+                "ProtonBackup.entitlements"
+            ],
             resources: [
                 .process("Assets.xcassets")
             ]
