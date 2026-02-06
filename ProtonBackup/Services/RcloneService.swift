@@ -69,16 +69,23 @@ final class RcloneService: @unchecked Sendable {
     }
 
     /// Configure rclone with Proton Drive credentials
+    /// - Parameters:
+    ///   - username: Proton email
+    ///   - password: Proton password
+    ///   - twoFactor: Either a 6-digit TOTP code or the base32 TOTP secret (optional)
     func configure(
         username: String,
         password: String,
-        twoFactorSecret: String? = nil
+        twoFactor: String? = nil
     ) throws {
         // Ensure config directory exists
         try fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
 
         // Obscure the password (rclone requirement)
         let obscuredPassword = try obscurePassword(password)
+
+        // Determine if twoFactor is a 6-digit code or a secret
+        let is2FACode = twoFactor.map { $0.count == 6 && $0.allSatisfy { $0.isNumber } } ?? false
 
         // Build config content
         var configContent = """
@@ -88,7 +95,8 @@ final class RcloneService: @unchecked Sendable {
         password = \(obscuredPassword)
         """
 
-        if let secret = twoFactorSecret, !secret.isEmpty {
+        // If it's a secret (not a 6-digit code), add it to config
+        if let secret = twoFactor, !secret.isEmpty, !is2FACode {
             let obscuredSecret = try obscurePassword(secret)
             configContent += "\n2fa = \(obscuredSecret)"
         }
@@ -100,6 +108,44 @@ final class RcloneService: @unchecked Sendable {
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         logService.log(.info, category: .config, message: "Rclone configured for Proton Drive")
+    }
+
+    /// Authenticate with Proton Drive using rclone config
+    /// This handles the interactive 2FA flow by piping the code to rclone
+    func authenticateWithCode(
+        username: String,
+        password: String,
+        twoFactorCode: String
+    ) async throws -> Bool {
+        // First remove any existing config
+        try? removeConfiguration()
+
+        // Ensure config directory exists
+        try fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        // Use rclone config create with stdin for 2FA code
+        // The flow: rclone will prompt for 2FA, we pipe the code
+        let result = await runCommandWithInput(
+            arguments: [
+                rclonePath,
+                "--config", configPath,
+                "config", "create", remoteName, "protondrive",
+                "username", username,
+                "password", password
+            ],
+            input: twoFactorCode + "\n"  // Send the 2FA code when prompted
+        )
+
+        if result.exitCode == 0 {
+            logService.log(.info, category: .config, message: "Rclone authenticated with 2FA code")
+            return true
+        } else {
+            // Check if it's a 2FA error
+            if result.error.contains("2fa") || result.error.contains("2FA") {
+                throw RcloneError.twoFactorRequired
+            }
+            throw RcloneError.connectionFailed(result.error)
+        }
     }
 
     /// Test the connection to Proton Drive
@@ -256,6 +302,48 @@ final class RcloneService: @unchecked Sendable {
             }
         }
     }
+
+    /// Run a command with stdin input (for interactive prompts like 2FA)
+    private func runCommandWithInput(arguments: [String], input: String) async -> CommandResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                let inputPipe = Pipe()
+
+                process.executableURL = URL(fileURLWithPath: arguments[0])
+                process.arguments = Array(arguments.dropFirst())
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
+                process.standardInput = inputPipe
+
+                do {
+                    try process.run()
+
+                    // Write input to stdin
+                    if let inputData = input.data(using: .utf8) {
+                        inputPipe.fileHandleForWriting.write(inputData)
+                        inputPipe.fileHandleForWriting.closeFile()
+                    }
+
+                    process.waitUntilExit()
+
+                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+
+                    let result = CommandResult(
+                        exitCode: process.terminationStatus,
+                        output: String(data: outputData, encoding: .utf8) ?? "",
+                        error: String(data: errorData, encoding: .utf8) ?? ""
+                    )
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(returning: CommandResult(exitCode: -1, output: "", error: error.localizedDescription))
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Supporting Types
@@ -309,6 +397,8 @@ enum RcloneError: LocalizedError {
     case notConfigured
     case obscureFailed
     case connectionFailed(String)
+    case twoFactorRequired
+    case twoFactorInvalid
     case listFailed(String)
     case downloadFailed(String, String)
     case syncFailed(String)
@@ -324,6 +414,10 @@ enum RcloneError: LocalizedError {
             return "Failed to secure password."
         case .connectionFailed(let error):
             return "Failed to connect to Proton Drive: \(error)"
+        case .twoFactorRequired:
+            return "Two-factor authentication is required. Please enter your 2FA code."
+        case .twoFactorInvalid:
+            return "Invalid 2FA code. Please check and try again."
         case .listFailed(let error):
             return "Failed to list files: \(error)"
         case .downloadFailed(let file, let error):

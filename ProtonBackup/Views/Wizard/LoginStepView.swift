@@ -214,26 +214,21 @@ struct LoginStepView: View {
             // 2FA field (optional)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("2FA Secret Key")
+                    Text("2FA Code")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text("(leave empty if no 2FA)")
                         .font(.caption2)
                         .foregroundColor(.secondary.opacity(0.7))
                 }
-                TextField("e.g. JBSWY3DPEHPK3PXP", text: $twoFactorSecret)
+                TextField("6-digit code from authenticator", text: $twoFactorSecret)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Not the 6-digit code! Enter the base32 secret key.")
-                        .font(.caption2)
-                        .foregroundColor(.statusYellow)
-                    Text("Find it in Proton Settings → Security → 2FA, or leave empty and disable 2FA temporarily.")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: 350, alignment: .leading)
+                Text("Enter the 6-digit code from your authenticator app (e.g. 123456)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: 350, alignment: .leading)
             }
             .frame(maxWidth: 350)
 
@@ -373,34 +368,46 @@ struct LoginStepView: View {
         isTesting = true
         testResult = nil
 
+        // Check if 2FA input is a 6-digit code
+        let is2FACode = twoFactorSecret.count == 6 && twoFactorSecret.allSatisfy { $0.isNumber }
+
         Task {
             do {
-                // First configure rclone
-                try rcloneService.configure(
-                    username: username,
-                    password: password,
-                    twoFactorSecret: twoFactorSecret.isEmpty ? nil : twoFactorSecret
-                )
+                if is2FACode {
+                    // Use interactive auth with 2FA code
+                    let success = try await rcloneService.authenticateWithCode(
+                        username: username,
+                        password: password,
+                        twoFactorCode: twoFactorSecret
+                    )
 
-                // Test the connection
-                let success = try await rcloneService.testConnection()
-
-                await MainActor.run {
-                    if success {
-                        testResult = .success
-                        wizardState.isAuthenticated = true
-                        wizardState.useRclone = true
-                        wizardState.username = username
-                        wizardState.rcloneConfigured = true
-                        // For rclone mode, source path is the remote
-                        wizardState.sourcePath = "protondrive:"
-
-                        appState.logService.log(.info, category: .config,
-                            message: "Rclone authentication successful for \(username)")
-                    } else {
-                        testResult = .failure("Connection test failed. Please check your credentials.")
+                    await MainActor.run {
+                        if success {
+                            handleAuthSuccess()
+                        } else {
+                            testResult = .failure("Authentication failed. Please check your credentials and 2FA code.")
+                        }
+                        isTesting = false
                     }
-                    isTesting = false
+                } else {
+                    // Configure with credentials (and optional TOTP secret)
+                    try rcloneService.configure(
+                        username: username,
+                        password: password,
+                        twoFactor: twoFactorSecret.isEmpty ? nil : twoFactorSecret
+                    )
+
+                    // Test the connection
+                    let success = try await rcloneService.testConnection()
+
+                    await MainActor.run {
+                        if success {
+                            handleAuthSuccess()
+                        } else {
+                            testResult = .failure("Connection test failed. Please check your credentials.")
+                        }
+                        isTesting = false
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -412,5 +419,18 @@ struct LoginStepView: View {
                 }
             }
         }
+    }
+
+    private func handleAuthSuccess() {
+        testResult = .success
+        wizardState.isAuthenticated = true
+        wizardState.useRclone = true
+        wizardState.username = username
+        wizardState.rcloneConfigured = true
+        // For rclone mode, source path is the remote
+        wizardState.sourcePath = "protondrive:"
+
+        appState.logService.log(.info, category: .config,
+            message: "Rclone authentication successful for \(username)")
     }
 }
