@@ -20,12 +20,10 @@ struct SetupWizardView: View {
                 switch wizardState.currentStep {
                 case .welcome:
                     WelcomeStepView()
-                case .login:
+                case .sourceFolder:
                     LoginStepView()
                 case .destination:
                     DestinationStepView()
-                case .mirrorLocation:
-                    MirrorLocationStepView()
                 case .deletionPolicy:
                     DeletionPolicyStepView()
                 case .initialBackup:
@@ -67,7 +65,7 @@ struct SetupWizardView: View {
             }
             .padding(20)
         }
-        .frame(width: 600, height: 650)
+        .frame(width: 600, height: 700)
     }
 
     private func finishSetup() {
@@ -75,7 +73,6 @@ struct SetupWizardView: View {
         config.sourcePath = wizardState.sourcePath
         config.destinationBookmark = wizardState.destinationBookmark
         config.destinationDisplayName = wizardState.destinationName
-        config.localMirrorPath = wizardState.mirrorPath
         config.deletionPolicy = wizardState.deletionPolicy
         config.keepVersions = wizardState.keepVersions
         appState.completeSetup(config: config)
@@ -86,9 +83,8 @@ struct SetupWizardView: View {
 
 enum WizardStep: Int, CaseIterable {
     case welcome = 0
-    case login
+    case sourceFolder
     case destination
-    case mirrorLocation
     case deletionPolicy
     case initialBackup
 }
@@ -107,9 +103,6 @@ class WizardState: ObservableObject {
     @Published var destinationName: String?
     @Published var destinationPath: String?
 
-    // Mirror state
-    @Published var mirrorPath = BackupConfiguration.defaultMirrorPath
-
     // Deletion policy state
     @Published var deletionPolicy: DeletionPolicy = .mirrorWithVersions
     @Published var keepVersions = true
@@ -121,9 +114,8 @@ class WizardState: ObservableObject {
     var canContinue: Bool {
         switch currentStep {
         case .welcome: return true
-        case .login: return isAuthenticated
+        case .sourceFolder: return isAuthenticated
         case .destination: return destinationBookmark != nil
-        case .mirrorLocation: return !mirrorPath.isEmpty
         case .deletionPolicy: return true
         case .initialBackup: return true
         }
@@ -150,7 +142,7 @@ struct ProgressStepsView: View {
     let currentStep: WizardStep
     let totalSteps: Int
 
-    private let stepLabels = ["Welcome", "Sign In", "Destination", "Mirror", "Policy", "Backup"]
+    private let stepLabels = ["Welcome", "Source", "Destination", "Policy", "Backup"]
 
     var body: some View {
         HStack(spacing: 4) {

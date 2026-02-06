@@ -23,7 +23,7 @@ final class WindowManager {
         showWindow(
             id: "setup-wizard",
             title: "Proton Backup Setup",
-            size: NSSize(width: 600, height: 650),
+            size: NSSize(width: 600, height: 700),
             styleMask: [.titled, .closable],
             content: {
                 guard let appState else { return AnyView(EmptyView()) }

@@ -1,7 +1,8 @@
 import Foundation
 
-/// Manages copying files from the local mirror to the external backup destination.
-/// Handles incremental copy, deletion policies, and versioned backups.
+/// Manages copying files from the Proton Drive folder to the external backup destination.
+/// Uses incremental sync (only copies changed files based on size/date comparison).
+/// Handles deletion policies and versioned backups.
 final class BackupEngine {
 
     private let logService: LogService
@@ -14,9 +15,10 @@ final class BackupEngine {
 
     // MARK: - Public API
 
-    /// Perform an incremental backup from the local mirror to the destination.
+    /// Perform an incremental backup from the source (Proton Drive folder) to the destination.
+    /// Only copies files that are new or have changed since the last backup.
     func performBackup(
-        mirrorPath: String,
+        sourcePath: String,
         destinationPath: String,
         deletionPolicy: DeletionPolicy,
         keepVersions: Bool,
@@ -30,28 +32,28 @@ final class BackupEngine {
 
         let fm = FileManager.default
 
-        logService.log(.info, category: .backup, message: "Starting backup: \(mirrorPath) → \(destinationPath)")
+        logService.log(.info, category: .backup, message: "Starting backup: \(sourcePath) → \(destinationPath)")
 
         // Ensure destination directory exists
         let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
-        // Scan mirror files (excluding _versions directory)
-        let mirrorURL = URL(fileURLWithPath: mirrorPath)
-        let mirrorFiles = try scanDirectory(mirrorURL, excludingPrefix: "_versions")
+        // Scan source files (excluding _versions directory)
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let sourceFiles = try scanDirectory(sourceURL, excludingPrefix: "_versions")
 
         // Scan existing destination files
         let destURL = URL(fileURLWithPath: backupRoot)
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
         // Build relative path sets
-        let mirrorRelative = Set(mirrorFiles.map { relativePath(from: mirrorURL, to: $0) })
+        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0) })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
 
         // Find files to copy (new or modified)
         var filesToCopy: [(source: URL, relativePath: String)] = []
-        for fileURL in mirrorFiles {
-            let relPath = relativePath(from: mirrorURL, to: fileURL)
+        for fileURL in sourceFiles {
+            let relPath = relativePath(from: sourceURL, to: fileURL)
             let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
 
             if !fm.fileExists(atPath: destFilePath) {
@@ -63,8 +65,8 @@ final class BackupEngine {
             }
         }
 
-        // Find files to delete (in destination but not in mirror)
-        let filesToDelete = destRelative.subtracting(mirrorRelative)
+        // Find files to delete (in destination but not in source)
+        let filesToDelete = destRelative.subtracting(sourceRelative)
 
         let totalWork = filesToCopy.count + filesToDelete.count
 

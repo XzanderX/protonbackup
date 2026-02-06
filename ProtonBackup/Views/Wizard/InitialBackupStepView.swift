@@ -7,15 +7,13 @@ struct InitialBackupStepView: View {
 
     @State private var isRunning = false
     @State private var progress: BackupProgress?
-    @State private var syncSummary: BackupSummary?
     @State private var backupSummary: BackupSummary?
     @State private var errorMessage: String?
     @State private var currentPhase: BackupPhase = .notStarted
 
     private enum BackupPhase {
         case notStarted
-        case syncingFromProton
-        case backingUpToDestination
+        case backingUp
         case complete
         case failed
     }
@@ -60,13 +58,9 @@ struct InitialBackupStepView: View {
                 }
             }
 
-            // Summaries
-            if let syncSummary {
-                SummaryCard(title: "Proton Drive Sync", summary: syncSummary)
-            }
-
+            // Summary
             if let backupSummary {
-                SummaryCard(title: "External Backup", summary: backupSummary)
+                SummaryCard(title: "Backup Complete", summary: backupSummary)
             }
 
             if let errorMessage {
@@ -107,8 +101,7 @@ struct InitialBackupStepView: View {
     private var phaseIcon: String {
         switch currentPhase {
         case .notStarted: return "arrow.triangle.2.circlepath"
-        case .syncingFromProton: return "icloud.and.arrow.down"
-        case .backingUpToDestination: return "externaldrive.fill.badge.plus"
+        case .backingUp: return "externaldrive.fill.badge.plus"
         case .complete: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle"
         }
@@ -116,8 +109,7 @@ struct InitialBackupStepView: View {
 
     private var phaseColor: Color {
         switch currentPhase {
-        case .notStarted: return .protonPurple
-        case .syncingFromProton, .backingUpToDestination: return .protonPurple
+        case .notStarted, .backingUp: return .protonPurple
         case .complete: return .statusGreen
         case .failed: return .statusRed
         }
@@ -126,11 +118,9 @@ struct InitialBackupStepView: View {
     private var phaseDescription: String {
         switch currentPhase {
         case .notStarted:
-            return "This will download all your Proton Drive files to the local mirror, then copy them to your external backup drive."
-        case .syncingFromProton:
-            return "Downloading files from Proton Drive to your local mirror…"
-        case .backingUpToDestination:
-            return "Copying files from local mirror to your external backup drive…"
+            return "This will copy all your Proton Drive files to your external backup drive."
+        case .backingUp:
+            return "Copying files from Proton Drive folder to your external backup drive…"
         case .complete:
             return "All files have been backed up. The app will now keep your backup in sync automatically."
         case .failed:
@@ -139,35 +129,24 @@ struct InitialBackupStepView: View {
     }
 
     private func runInitialBackup() {
+        guard let sourcePath = wizardState.sourcePath else {
+            errorMessage = "No source folder selected"
+            return
+        }
+
         isRunning = true
         errorMessage = nil
-        currentPhase = .syncingFromProton
+        currentPhase = .backingUp
 
         Task {
             do {
-                // Phase 1: Sync from Proton
-                try await appState.syncEngine.initialize()
-
-                let syncResult = try await appState.syncEngine.performFullSync(
-                    mirrorPath: wizardState.mirrorPath,
-                    deletionPolicy: wizardState.deletionPolicy
-                ) { prog in
-                    Task { @MainActor in
-                        self.progress = prog
-                    }
-                }
-
-                syncSummary = syncResult
-
-                // Phase 2: Backup to destination
+                // Backup from source (Proton Drive folder) to destination
                 if let destBookmark = wizardState.destinationBookmark,
                    let destURL = BookmarkManager.startAccessing(bookmark: destBookmark) {
                     defer { BookmarkManager.stopAccessing(url: destURL) }
 
-                    currentPhase = .backingUpToDestination
-
                     let backupResult = try await appState.backupEngine.performBackup(
-                        mirrorPath: wizardState.mirrorPath,
+                        sourcePath: sourcePath,
                         destinationPath: destURL.path,
                         deletionPolicy: wizardState.deletionPolicy,
                         keepVersions: wizardState.keepVersions

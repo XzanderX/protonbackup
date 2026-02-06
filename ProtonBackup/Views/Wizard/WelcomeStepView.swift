@@ -22,19 +22,9 @@ struct WelcomeStepView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 StepExplanationRow(
-                    icon: "cloud.fill",
-                    title: "Proton Drive",
-                    description: "Your encrypted files in the cloud"
-                )
-
-                Image(systemName: "arrow.down")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity)
-
-                StepExplanationRow(
-                    icon: "internaldrive",
-                    title: "Local Mirror",
-                    description: "A local copy on your Mac for fast access"
+                    icon: "folder.fill.badge.gearshape",
+                    title: "Proton Drive Folder",
+                    description: "Synced by the official Proton Drive app"
                 )
 
                 Image(systemName: "arrow.down")
@@ -51,9 +41,14 @@ struct WelcomeStepView: View {
 
             Spacer()
 
-            Text("This wizard will guide you through the setup in a few steps.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            VStack(spacing: 8) {
+                Text("Requires the Proton Drive macOS app to be installed.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Link("Download Proton Drive", destination: URL(string: "https://proton.me/drive/download")!)
+                    .font(.caption)
+            }
         }
     }
 }

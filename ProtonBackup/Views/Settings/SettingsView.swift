@@ -135,26 +135,6 @@ struct BackupSettingsView: View {
             }
 
             Section {
-                LabeledContent("Mirror path") {
-                    Text(appState.config.localMirrorPath)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Button("Change Mirror Location…") {
-                    changeMirrorLocation()
-                }
-
-                Button("Open Mirror Folder") {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: appState.config.localMirrorPath))
-                }
-            } header: {
-                Text("Local Mirror")
-            }
-
-            Section {
                 Picker("Deletion policy", selection: Binding(
                     get: { appState.config.deletionPolicy },
                     set: { newValue in
@@ -202,17 +182,6 @@ struct BackupSettingsView: View {
         }
     }
 
-    private func changeMirrorLocation() {
-        guard let url = BookmarkManager.selectFolder(
-            title: "Choose Mirror Location",
-            message: "Select where the local mirror will be stored."
-        ) else { return }
-
-        appState.config.localMirrorPath = url.path
-        appState.saveConfig()
-        appState.fileWatcher.stopWatching()
-        appState.fileWatcher.startWatching(path: url.path)
-    }
 }
 
 // MARK: - Account Settings

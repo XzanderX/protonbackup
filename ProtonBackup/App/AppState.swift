@@ -200,9 +200,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Backup from local mirror to external destination.
+    /// Backup from Proton Drive folder to external destination.
     private func performBackup(to destPath: String) async {
         guard !syncState.isBacking else { return }
+        guard let sourcePath = config.sourcePath else {
+            logService.log(.error, category: .backup, message: "No source path configured")
+            return
+        }
         syncState.isBacking = true
 
         backupState = .backing(progress: BackupProgress(
@@ -211,7 +215,7 @@ final class AppState: ObservableObject {
 
         do {
             let summary = try await backupEngine.performBackup(
-                mirrorPath: config.localMirrorPath,
+                sourcePath: sourcePath,
                 destinationPath: destPath,
                 deletionPolicy: config.deletionPolicy,
                 keepVersions: config.keepVersions
