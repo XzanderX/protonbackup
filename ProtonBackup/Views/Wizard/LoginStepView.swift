@@ -60,7 +60,7 @@ struct LoginStepView: View {
                     } else if let error = errorMessage {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .font(.caption)
-                            .foregroundColor(.statusOrange)
+                            .foregroundColor(.statusYellow)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 350)
 
