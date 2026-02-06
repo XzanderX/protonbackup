@@ -2,7 +2,7 @@ import Foundation
 
 /// Service for managing rclone operations with Proton Drive.
 /// Handles configuration, file listing, and downloads.
-final class RcloneService {
+final class RcloneService: @unchecked Sendable {
 
     static let shared = RcloneService()
 

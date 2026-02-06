@@ -185,7 +185,6 @@ struct LoginStepView: View {
                     .foregroundColor(.secondary)
                 TextField("user@proton.me", text: $username)
                     .textFieldStyle(.roundedBorder)
-                    .textContentType(.emailAddress)
                     .autocorrectionDisabled()
             }
             .frame(maxWidth: 350)
