@@ -214,20 +214,26 @@ struct LoginStepView: View {
             // 2FA field (optional)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("2FA Secret")
+                    Text("2FA Secret Key")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("(optional)")
+                    Text("(leave empty if no 2FA)")
                         .font(.caption2)
                         .foregroundColor(.secondary.opacity(0.7))
                 }
-                TextField("TOTP secret key", text: $twoFactorSecret)
+                TextField("e.g. JBSWY3DPEHPK3PXP", text: $twoFactorSecret)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
-                Text("Enter your TOTP secret if you have 2FA enabled. This is the base32 key from your authenticator setup.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: 350, alignment: .leading)
+                    .font(.system(.body, design: .monospaced))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Not the 6-digit code! Enter the base32 secret key.")
+                        .font(.caption2)
+                        .foregroundColor(.statusYellow)
+                    Text("Find it in Proton Settings → Security → 2FA, or leave empty and disable 2FA temporarily.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: 350, alignment: .leading)
             }
             .frame(maxWidth: 350)
 
