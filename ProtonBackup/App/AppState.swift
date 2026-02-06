@@ -200,6 +200,28 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Pause the current backup.
+    func pauseBackup() {
+        guard backupState.isRunning else { return }
+
+        if case .backing(let progress) = backupState {
+            syncState.pause(progress: progress)
+            backupState = .paused(progress: progress)
+            logService.log(.info, category: .backup, message: "Backup paused")
+        }
+    }
+
+    /// Resume a paused backup.
+    func resumeBackup() {
+        guard backupState.isPaused else { return }
+
+        if let progress = syncState.pausedProgress {
+            syncState.resume()
+            backupState = .backing(progress: progress)
+            logService.log(.info, category: .backup, message: "Backup resumed")
+        }
+    }
+
     /// Backup from Proton Drive folder to external destination.
     private func performBackup(to destPath: String) async {
         guard !syncState.isBacking else { return }
@@ -218,10 +240,18 @@ final class AppState: ObservableObject {
                 sourcePath: sourcePath,
                 destinationPath: destPath,
                 deletionPolicy: config.deletionPolicy,
-                keepVersions: config.keepVersions
+                keepVersions: config.keepVersions,
+                pauseChecker: { [weak self] in
+                    self?.syncState.isPaused ?? false
+                }
             ) { [weak self] progress in
                 Task { @MainActor in
-                    self?.backupState = .backing(progress: progress)
+                    guard let self else { return }
+                    if self.syncState.isPaused {
+                        self.backupState = .paused(progress: progress)
+                    } else {
+                        self.backupState = .backing(progress: progress)
+                    }
                 }
             }
 

@@ -17,11 +17,14 @@ final class BackupEngine {
 
     /// Perform an incremental backup from the source (Proton Drive folder) to the destination.
     /// Only copies files that are new or have changed since the last backup.
+    /// - Parameters:
+    ///   - pauseChecker: Optional closure that returns true if backup should pause. When paused, the backup waits until it returns false.
     func performBackup(
         sourcePath: String,
         destinationPath: String,
         deletionPolicy: DeletionPolicy,
         keepVersions: Bool,
+        pauseChecker: (() -> Bool)? = nil,
         progressHandler: @escaping (BackupProgress) -> Void
     ) async throws -> BackupSummary {
         let startTime = Date()
@@ -84,11 +87,17 @@ final class BackupEngine {
         // Copy files
         var completed = 0
         for (sourceURL, relPath) in filesToCopy {
-            progressHandler(BackupProgress(
+            // Check for pause
+            while pauseChecker?() == true {
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            }
+
+            let currentProgress = BackupProgress(
                 totalFiles: totalWork,
                 completedFiles: completed,
                 currentFileName: relPath
-            ))
+            )
+            progressHandler(currentProgress)
 
             do {
                 let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
@@ -105,11 +114,17 @@ final class BackupEngine {
 
         // Handle deletions
         for relPath in filesToDelete {
-            progressHandler(BackupProgress(
+            // Check for pause
+            while pauseChecker?() == true {
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            }
+
+            let currentProgress = BackupProgress(
                 totalFiles: totalWork,
                 completedFiles: completed,
                 currentFileName: relPath
-            ))
+            )
+            progressHandler(currentProgress)
 
             do {
                 let destPath = (backupRoot as NSString).appendingPathComponent(relPath)

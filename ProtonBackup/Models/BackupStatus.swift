@@ -11,6 +11,9 @@ enum BackupState: Equatable {
     /// Currently copying from local mirror to external destination.
     case backing(progress: BackupProgress)
 
+    /// Backup is paused by the user.
+    case paused(progress: BackupProgress)
+
     /// Backup completed and everything is up to date.
     case upToDate
 
@@ -32,12 +35,19 @@ enum BackupState: Equatable {
         }
     }
 
+    var isPaused: Bool {
+        if case .paused = self { return true }
+        return false
+    }
+
     var menuBarIconName: String {
         switch self {
         case .idle:
             return "arrow.triangle.2.circlepath"
         case .syncing, .backing:
             return "arrow.triangle.2.circlepath.circle.fill"
+        case .paused:
+            return "pause.circle.fill"
         case .upToDate:
             return "checkmark.circle.fill"
         case .destinationDisconnected:
@@ -57,6 +67,8 @@ enum BackupState: Equatable {
             return "Syncing from Proton Drive… \(progress.summary)"
         case .backing(let progress):
             return "Backing up… \(progress.summary)"
+        case .paused(let progress):
+            return "Paused at \(progress.summary)"
         case .upToDate:
             return "Up to date"
         case .destinationDisconnected:

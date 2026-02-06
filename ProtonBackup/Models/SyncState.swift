@@ -8,6 +8,9 @@ struct SyncState: Equatable {
     /// Whether a backup (mirror → destination) is currently in progress.
     var isBacking: Bool = false
 
+    /// Whether the backup is paused by the user.
+    var isPaused: Bool = false
+
     /// Whether changes are queued for backup once the destination connects.
     var pendingBackup: Bool = false
 
@@ -17,6 +20,9 @@ struct SyncState: Equatable {
     /// Debounce timer identifier for local file changes.
     var localChangeDebounceID: UUID?
 
+    /// Progress at the time of pause (for resuming).
+    var pausedProgress: BackupProgress?
+
     /// Whether a run is locked out (single-run lock).
     var isLocked: Bool {
         isSyncing || isBacking
@@ -25,8 +31,21 @@ struct SyncState: Equatable {
     /// Reset after a complete backup cycle.
     mutating func resetAfterBackup() {
         isBacking = false
+        isPaused = false
         pendingBackup = false
         pendingRemoteChanges = nil
+        pausedProgress = nil
+    }
+
+    /// Pause the current backup.
+    mutating func pause(progress: BackupProgress) {
+        isPaused = true
+        pausedProgress = progress
+    }
+
+    /// Resume a paused backup.
+    mutating func resume() {
+        isPaused = false
     }
 }
 

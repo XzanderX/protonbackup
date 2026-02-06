@@ -13,12 +13,26 @@ struct MenuBarView: View {
             Divider()
 
             // Quick actions
-            Button {
-                appState.runNow()
-            } label: {
-                Label("Back Up Now", systemImage: "arrow.triangle.2.circlepath")
+            if appState.backupState.isRunning {
+                Button {
+                    appState.pauseBackup()
+                } label: {
+                    Label("Pause Backup", systemImage: "pause.fill")
+                }
+            } else if appState.backupState.isPaused {
+                Button {
+                    appState.resumeBackup()
+                } label: {
+                    Label("Resume Backup", systemImage: "play.fill")
+                }
+            } else {
+                Button {
+                    appState.runNow()
+                } label: {
+                    Label("Back Up Now", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(!appState.config.setupCompleted)
             }
-            .disabled(appState.backupState.isRunning || !appState.config.setupCompleted)
 
             Divider()
 
@@ -120,6 +134,14 @@ struct StatusHeaderView: View {
                 }
             }
 
+            if case .paused(let progress) = appState.backupState {
+                ProgressView(value: progress.fraction)
+                    .tint(.statusYellow)
+                Text("Paused - \(progress.summary)")
+                    .font(.caption2)
+                    .foregroundColor(.statusYellow)
+            }
+
             // Last summary
             if let summary = appState.lastSummary, !appState.backupState.isRunning {
                 Text(summary.displayText)
@@ -136,6 +158,7 @@ struct StatusHeaderView: View {
         case .error: return .statusRed
         case .destinationDisconnected: return .statusYellow
         case .syncing, .backing: return .protonPurple
+        case .paused: return .statusYellow
         default: return .secondary
         }
     }
