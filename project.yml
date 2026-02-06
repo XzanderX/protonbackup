@@ -31,6 +31,11 @@ targets:
       path: ProtonBackup/Info.plist
     entitlements:
       path: ProtonBackup/ProtonBackup.entitlements
+    postBuildScripts:
+      - name: Bundle rclone
+        script: |
+          "${PROJECT_DIR}/scripts/bundle-rclone.sh"
+        basedOnDependencyAnalysis: false
 
   ProtonBackupTests:
     type: bundle.unit-test

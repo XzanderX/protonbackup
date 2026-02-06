@@ -223,12 +223,9 @@ final class AppState: ObservableObject {
     }
 
     /// Backup from Proton Drive folder to external destination.
+    /// Uses hybrid approach (rclone + local optimization) when rclone is configured.
     private func performBackup(to destPath: String) async {
         guard !syncState.isBacking else { return }
-        guard let sourcePath = config.sourcePath else {
-            logService.log(.error, category: .backup, message: "No source path configured")
-            return
-        }
         syncState.isBacking = true
 
         backupState = .backing(progress: BackupProgress(
@@ -236,21 +233,55 @@ final class AppState: ObservableObject {
         ))
 
         do {
-            let summary = try await backupEngine.performBackup(
-                sourcePath: sourcePath,
-                destinationPath: destPath,
-                deletionPolicy: config.deletionPolicy,
-                keepVersions: config.keepVersions,
-                pauseChecker: { [weak self] in
-                    self?.syncState.isPaused ?? false
+            let summary: BackupSummary
+
+            if config.useRclone && config.rcloneConfigured {
+                // Hybrid mode: use rclone as source of truth, copy from local when available
+                let localFolderPath = detectLocalProtonDriveFolder()
+
+                summary = try await backupEngine.performHybridBackup(
+                    localFolderPath: localFolderPath,
+                    destinationPath: destPath,
+                    deletionPolicy: config.deletionPolicy,
+                    keepVersions: config.keepVersions,
+                    pauseChecker: { [weak self] in
+                        self?.syncState.isPaused ?? false
+                    }
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if self.syncState.isPaused {
+                            self.backupState = .paused(progress: progress)
+                        } else {
+                            self.backupState = .backing(progress: progress)
+                        }
+                    }
                 }
-            ) { [weak self] progress in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if self.syncState.isPaused {
-                        self.backupState = .paused(progress: progress)
-                    } else {
-                        self.backupState = .backing(progress: progress)
+            } else {
+                // Local folder mode: copy directly from Proton Drive app folder
+                guard let sourcePath = config.sourcePath else {
+                    logService.log(.error, category: .backup, message: "No source path configured")
+                    syncState.isBacking = false
+                    backupState = .error(message: "No source path configured")
+                    return
+                }
+
+                summary = try await backupEngine.performBackup(
+                    sourcePath: sourcePath,
+                    destinationPath: destPath,
+                    deletionPolicy: config.deletionPolicy,
+                    keepVersions: config.keepVersions,
+                    pauseChecker: { [weak self] in
+                        self?.syncState.isPaused ?? false
+                    }
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if self.syncState.isPaused {
+                            self.backupState = .paused(progress: progress)
+                        } else {
+                            self.backupState = .backing(progress: progress)
+                        }
                     }
                 }
             }
@@ -283,6 +314,26 @@ final class AppState: ObservableObject {
                 notificationService.notifyBackupFailed(errorMessage: error.localizedDescription)
             }
         }
+    }
+
+    /// Detect the local Proton Drive app folder if available.
+    private func detectLocalProtonDriveFolder() -> String? {
+        let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
+        let fm = FileManager.default
+
+        guard let contents = try? fm.contentsOfDirectory(atPath: cloudStoragePath) else {
+            return nil
+        }
+
+        if let protonFolder = contents.first(where: { $0.hasPrefix("ProtonDrive-") }) {
+            let fullPath = cloudStoragePath + "/" + protonFolder
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
+                return fullPath
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Drive monitoring

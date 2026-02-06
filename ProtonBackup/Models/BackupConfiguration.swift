@@ -55,6 +55,14 @@ struct BackupConfiguration: Codable, Equatable {
     /// Date of the last successful remote sync to the local mirror.
     var lastSuccessfulSync: Date?
 
+    // MARK: - Rclone settings
+
+    /// Whether to use rclone for cloud access instead of local folder.
+    var useRclone: Bool
+
+    /// Whether rclone has been configured with Proton credentials.
+    var rcloneConfigured: Bool
+
     // MARK: - Setup state
 
     /// Whether the first-run setup wizard has been completed.
@@ -74,6 +82,8 @@ struct BackupConfiguration: Codable, Equatable {
         startAtLogin: false,
         lastSuccessfulBackup: nil,
         lastSuccessfulSync: nil,
+        useRclone: false,
+        rcloneConfigured: false,
         setupCompleted: false
     )
 

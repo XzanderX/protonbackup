@@ -129,30 +129,48 @@ struct InitialBackupStepView: View {
     }
 
     private func runInitialBackup() {
-        guard let sourcePath = wizardState.sourcePath else {
-            errorMessage = "No source folder selected"
-            return
-        }
-
         isRunning = true
         errorMessage = nil
         currentPhase = .backingUp
 
         Task {
             do {
-                // Backup from source (Proton Drive folder) to destination
+                // Backup from source (Proton Drive folder or cloud) to destination
                 if let destBookmark = wizardState.destinationBookmark,
                    let destURL = BookmarkManager.startAccessing(bookmark: destBookmark) {
                     defer { BookmarkManager.stopAccessing(url: destURL) }
 
-                    let backupResult = try await appState.backupEngine.performBackup(
-                        sourcePath: sourcePath,
-                        destinationPath: destURL.path,
-                        deletionPolicy: wizardState.deletionPolicy,
-                        keepVersions: wizardState.keepVersions
-                    ) { prog in
-                        Task { @MainActor in
-                            self.progress = prog
+                    let backupResult: BackupSummary
+
+                    if wizardState.useRclone && wizardState.rcloneConfigured {
+                        // Hybrid mode: use rclone as source of truth
+                        let localFolderPath = detectLocalProtonDriveFolder()
+
+                        backupResult = try await appState.backupEngine.performHybridBackup(
+                            localFolderPath: localFolderPath,
+                            destinationPath: destURL.path,
+                            deletionPolicy: wizardState.deletionPolicy,
+                            keepVersions: wizardState.keepVersions
+                        ) { prog in
+                            Task { @MainActor in
+                                self.progress = prog
+                            }
+                        }
+                    } else {
+                        // Local folder mode
+                        guard let sourcePath = wizardState.sourcePath else {
+                            throw BackupError.noSourcePath
+                        }
+
+                        backupResult = try await appState.backupEngine.performBackup(
+                            sourcePath: sourcePath,
+                            destinationPath: destURL.path,
+                            deletionPolicy: wizardState.deletionPolicy,
+                            keepVersions: wizardState.keepVersions
+                        ) { prog in
+                            Task { @MainActor in
+                                self.progress = prog
+                            }
                         }
                     }
 
@@ -168,6 +186,38 @@ struct InitialBackupStepView: View {
                 currentPhase = .failed
                 isRunning = false
             }
+        }
+    }
+
+    /// Detect the local Proton Drive app folder if available.
+    private func detectLocalProtonDriveFolder() -> String? {
+        let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
+        let fm = FileManager.default
+
+        guard let contents = try? fm.contentsOfDirectory(atPath: cloudStoragePath) else {
+            return nil
+        }
+
+        if let protonFolder = contents.first(where: { $0.hasPrefix("ProtonDrive-") }) {
+            let fullPath = cloudStoragePath + "/" + protonFolder
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
+                return fullPath
+            }
+        }
+
+        return nil
+    }
+}
+
+/// Errors specific to backup operations.
+enum BackupError: LocalizedError {
+    case noSourcePath
+
+    var errorDescription: String? {
+        switch self {
+        case .noSourcePath:
+            return "No source folder selected"
         }
     }
 }

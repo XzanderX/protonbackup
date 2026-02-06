@@ -75,6 +75,8 @@ struct SetupWizardView: View {
         config.destinationDisplayName = wizardState.destinationName
         config.deletionPolicy = wizardState.deletionPolicy
         config.keepVersions = wizardState.keepVersions
+        config.useRclone = wizardState.useRclone
+        config.rcloneConfigured = wizardState.rcloneConfigured
         appState.completeSetup(config: config)
     }
 }
@@ -97,6 +99,10 @@ class WizardState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var username = ""
     @Published var sourcePath: String?
+
+    // Rclone state
+    @Published var useRclone = false
+    @Published var rcloneConfigured = false
 
     // Destination state
     @Published var destinationBookmark: Data?
@@ -122,7 +128,9 @@ class WizardState: ObservableObject {
     }
 
     var canFinish: Bool {
-        sourcePath != nil && destinationBookmark != nil
+        // For rclone mode, sourcePath will be "protondrive:"
+        let hasSource = useRclone ? rcloneConfigured : (sourcePath != nil)
+        return hasSource && destinationBookmark != nil
     }
 
     func goForward() {
