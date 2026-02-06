@@ -338,7 +338,7 @@ struct AccountSettingsView: View {
 
         Task {
             do {
-                try await ProtonAuthService.shared.login(
+                _ = try await ProtonAuthService.shared.authenticate(
                     username: loginUsername,
                     password: loginPassword
                 )
