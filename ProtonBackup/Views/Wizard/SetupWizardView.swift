@@ -67,11 +67,12 @@ struct SetupWizardView: View {
             }
             .padding(20)
         }
-        .frame(width: 600, height: 500)
+        .frame(width: 600, height: 580)
     }
 
     private func finishSetup() {
         var config = appState.config
+        config.sourcePath = wizardState.sourcePath
         config.destinationBookmark = wizardState.destinationBookmark
         config.destinationDisplayName = wizardState.destinationName
         config.localMirrorPath = wizardState.mirrorPath
@@ -96,9 +97,10 @@ enum WizardStep: Int, CaseIterable {
 class WizardState: ObservableObject {
     @Published var currentStep: WizardStep = .welcome
 
-    // Login state
+    // Source (Proton Drive folder) state
     @Published var isAuthenticated = false
     @Published var username = ""
+    @Published var sourcePath: String?
 
     // Destination state
     @Published var destinationBookmark: Data?
@@ -128,7 +130,7 @@ class WizardState: ObservableObject {
     }
 
     var canFinish: Bool {
-        isAuthenticated && destinationBookmark != nil
+        sourcePath != nil && destinationBookmark != nil
     }
 
     func goForward() {

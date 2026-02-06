@@ -4,6 +4,11 @@ import Foundation
 /// Stored as JSON in Application Support/ProtonBackup/config.json.
 struct BackupConfiguration: Codable, Equatable {
 
+    // MARK: - Source (Proton Drive folder)
+
+    /// Path to the Proton Drive sync folder (from official Proton Drive app).
+    var sourcePath: String?
+
     // MARK: - Destination
 
     /// Security-scoped bookmark data for the external backup destination.
@@ -58,6 +63,7 @@ struct BackupConfiguration: Codable, Equatable {
     // MARK: - Defaults
 
     static let `default` = BackupConfiguration(
+        sourcePath: nil,
         destinationBookmark: nil,
         destinationDisplayName: nil,
         localMirrorPath: defaultMirrorPath,

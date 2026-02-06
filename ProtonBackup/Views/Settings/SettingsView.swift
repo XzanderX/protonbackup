@@ -220,142 +220,86 @@ struct BackupSettingsView: View {
 struct AccountSettingsView: View {
     @EnvironmentObject var appState: AppState
 
-    @State private var showingSignOutConfirmation = false
-    @State private var showingLoginSheet = false
-    @State private var loginUsername = ""
-    @State private var loginPassword = ""
-    @State private var isLoggingIn = false
-    @State private var loginError: String?
-
     var body: some View {
         Form {
             Section {
-                if let username = KeychainService.shared.getUsername() {
-                    LabeledContent("Signed in as") {
-                        Text(username)
+                if let sourcePath = appState.config.sourcePath {
+                    LabeledContent("Proton Drive folder") {
+                        Text(sourcePath)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
 
-                    LabeledContent("Session") {
-                        Text(ProtonAuthService.shared.hasSession ? "Active" : "None")
-                            .foregroundColor(ProtonAuthService.shared.hasSession ? .statusGreen : .secondary)
-                    }
-
-                    Button("Test Connection") {
-                        Task {
-                            let success = try? await ProtonAuthService.shared.testConnection()
-                            if success == true {
-                                appState.logService.log(.info, category: .auth, message: "Connection test passed")
-                            } else {
-                                appState.logService.log(.warning, category: .auth, message: "Connection test failed")
-                            }
+                    LabeledContent("Status") {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(folderExists(sourcePath) ? Color.statusGreen : Color.statusRed)
+                                .frame(width: 8, height: 8)
+                            Text(folderExists(sourcePath) ? "Accessible" : "Not found")
+                                .foregroundColor(folderExists(sourcePath) ? .statusGreen : .statusRed)
                         }
                     }
+
+                    Button("Open in Finder") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: sourcePath))
+                    }
+
+                    Button("Change Source Folder…") {
+                        changeSourceFolder()
+                    }
                 } else {
-                    Text("Not signed in")
+                    Text("No Proton Drive folder configured")
                         .foregroundColor(.secondary)
 
-                    Button("Sign In to Proton…") {
-                        showingLoginSheet = true
+                    Button("Select Proton Drive Folder…") {
+                        changeSourceFolder()
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.protonPurple)
                 }
             } header: {
-                Text("Proton Account")
+                Text("Proton Drive Source")
             }
 
-            if KeychainService.shared.getUsername() != nil {
-                Section {
-                    Button("Sign Out", role: .destructive) {
-                        showingSignOutConfirmation = true
-                    }
-                    .confirmationDialog(
-                        "Sign Out",
-                        isPresented: $showingSignOutConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Sign Out", role: .destructive) {
-                            Task {
-                                await appState.signOut()
-                            }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("This will stop all backups and remove stored credentials. Your backup files will not be deleted.")
-                    }
-                }
+            Section {
+                Text("This app backs up files from the Proton Drive sync folder (created by the official Proton Drive macOS app) to your external backup drive.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Link("Download Proton Drive app", destination: URL(string: "https://proton.me/drive/download")!)
+                    .font(.caption)
+            } header: {
+                Text("About")
             }
         }
         .formStyle(.grouped)
-        .sheet(isPresented: $showingLoginSheet) {
-            VStack(spacing: 20) {
-                Text("Sign In to Proton")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Email or username", text: $loginUsername)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.username)
-
-                    SecureField("Password", text: $loginPassword)
-                        .textFieldStyle(.roundedBorder)
-                        .textContentType(.password)
-                }
-
-                if let error = loginError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                }
-
-                HStack {
-                    Button("Cancel") {
-                        showingLoginSheet = false
-                        loginUsername = ""
-                        loginPassword = ""
-                        loginError = nil
-                    }
-
-                    Spacer()
-
-                    Button("Sign In") {
-                        performLogin()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.protonPurple)
-                    .disabled(loginUsername.isEmpty || loginPassword.isEmpty || isLoggingIn)
-                }
-            }
-            .padding(30)
-            .frame(width: 350)
-        }
     }
 
-    private func performLogin() {
-        isLoggingIn = true
-        loginError = nil
+    private func folderExists(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
 
-        Task {
-            do {
-                _ = try await ProtonAuthService.shared.authenticate(
-                    username: loginUsername,
-                    password: loginPassword
-                )
-                appState.logService.log(.info, category: .auth, message: "Signed in as \(loginUsername)")
+    private func changeSourceFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Select Proton Drive Folder"
+        panel.message = "Choose the folder where Proton Drive syncs your files"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
 
-                await MainActor.run {
-                    showingLoginSheet = false
-                    loginUsername = ""
-                    loginPassword = ""
-                    isLoggingIn = false
-                }
-            } catch {
-                await MainActor.run {
-                    loginError = error.localizedDescription
-                    isLoggingIn = false
-                }
-            }
+        let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
+        if FileManager.default.fileExists(atPath: cloudStoragePath) {
+            panel.directoryURL = URL(fileURLWithPath: cloudStoragePath)
+        }
+
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.config.sourcePath = url.path
+            appState.saveConfig()
+            appState.logService.log(.info, category: .config,
+                message: "Changed source folder to: \(url.path)")
         }
     }
 }
