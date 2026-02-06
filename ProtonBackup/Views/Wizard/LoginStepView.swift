@@ -21,7 +21,6 @@ struct LoginStepView: View {
     // Rclone authentication fields
     @State private var username = ""
     @State private var password = ""
-    @State private var twoFactorSecret = ""
     @State private var showPassword = false
     @State private var isTesting = false
     @State private var testResult: TestResult?
@@ -211,26 +210,26 @@ struct LoginStepView: View {
             }
             .frame(maxWidth: 350)
 
-            // 2FA field (optional)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("2FA Code")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("(leave empty if no 2FA)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary.opacity(0.7))
-                }
-                TextField("6-digit code from authenticator", text: $twoFactorSecret)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .font(.system(.body, design: .monospaced))
-                Text("Enter the 6-digit code from your authenticator app (e.g. 123456)")
+            // 2FA warning/info
+            VStack(alignment: .leading, spacing: 6) {
+                Label("2FA Account?", systemImage: "lock.shield")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.statusYellow)
+                Text("If you have 2FA enabled, cloud login won't work for automated backups. Options:")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                    .frame(maxWidth: 350, alignment: .leading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("• Use \"Local Folder\" mode instead (recommended)")
+                    Text("• Or temporarily disable 2FA in Proton settings")
+                }
+                .font(.caption2)
+                .foregroundColor(.secondary)
             }
-            .frame(maxWidth: 350)
+            .padding(10)
+            .frame(maxWidth: 350, alignment: .leading)
+            .background(Color.statusYellow.opacity(0.1))
+            .cornerRadius(8)
 
             // Test result
             if let result = testResult {
@@ -368,54 +367,39 @@ struct LoginStepView: View {
         isTesting = true
         testResult = nil
 
-        // Check if 2FA input is a 6-digit code
-        let is2FACode = twoFactorSecret.count == 6 && twoFactorSecret.allSatisfy { $0.isNumber }
-
         Task {
             do {
-                if is2FACode {
-                    // Use interactive auth with 2FA code
-                    let success = try await rcloneService.authenticateWithCode(
-                        username: username,
-                        password: password,
-                        twoFactorCode: twoFactorSecret
-                    )
+                // Configure rclone with credentials (no 2FA support for automated backups)
+                try rcloneService.configure(
+                    username: username,
+                    password: password,
+                    twoFactor: nil
+                )
 
-                    await MainActor.run {
-                        if success {
-                            handleAuthSuccess()
-                        } else {
-                            testResult = .failure("Authentication failed. Please check your credentials and 2FA code.")
-                        }
-                        isTesting = false
+                // Test the connection
+                let success = try await rcloneService.testConnection()
+
+                await MainActor.run {
+                    if success {
+                        handleAuthSuccess()
+                    } else {
+                        testResult = .failure("Connection test failed. Please check your credentials.")
                     }
-                } else {
-                    // Configure with credentials (and optional TOTP secret)
-                    try rcloneService.configure(
-                        username: username,
-                        password: password,
-                        twoFactor: twoFactorSecret.isEmpty ? nil : twoFactorSecret
-                    )
-
-                    // Test the connection
-                    let success = try await rcloneService.testConnection()
-
-                    await MainActor.run {
-                        if success {
-                            handleAuthSuccess()
-                        } else {
-                            testResult = .failure("Connection test failed. Please check your credentials.")
-                        }
-                        isTesting = false
-                    }
+                    isTesting = false
                 }
             } catch {
                 await MainActor.run {
-                    testResult = .failure(error.localizedDescription)
+                    // Check if it's a 2FA error and give helpful message
+                    let errorMsg = error.localizedDescription
+                    if errorMsg.contains("2fa") || errorMsg.contains("2FA") {
+                        testResult = .failure("This account has 2FA enabled. Please use \"Local Folder\" mode instead, or temporarily disable 2FA in your Proton account settings.")
+                    } else {
+                        testResult = .failure(errorMsg)
+                    }
                     isTesting = false
 
                     appState.logService.log(.error, category: .config,
-                        message: "Rclone authentication failed: \(error.localizedDescription)")
+                        message: "Rclone authentication failed: \(errorMsg)")
                 }
             }
         }
