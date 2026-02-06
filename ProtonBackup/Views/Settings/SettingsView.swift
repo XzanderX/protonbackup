@@ -342,7 +342,6 @@ struct AccountSettingsView: View {
                     username: loginUsername,
                     password: loginPassword
                 )
-                KeychainService.shared.saveUsername(loginUsername)
                 appState.logService.log(.info, category: .auth, message: "Signed in as \(loginUsername)")
 
                 await MainActor.run {
