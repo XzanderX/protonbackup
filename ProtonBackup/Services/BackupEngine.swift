@@ -12,6 +12,28 @@ final class BackupEngine {
     private let versionManager: VersionManager
     private let rcloneService = RcloneService.shared
 
+    /// Maximum retry attempts for transient errors
+    private let maxRetryAttempts = 3
+
+    /// Files/patterns to skip during backup (temp files, system files, partial downloads)
+    private let skipPatterns: [String] = [
+        ".DS_Store",
+        ".localized",
+        ".tmp",
+        ".partial",
+        ".download",
+        ".crdownload",
+        "~$",           // Office temp files
+        ".~lock.",      // LibreOffice locks
+        ".swp",         // Vim swap
+        ".swo",
+        "Thumbs.db",
+        "desktop.ini",
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd"
+    ]
+
     init(logService: LogService, versionManager: VersionManager) {
         self.logService = logService
         self.versionManager = versionManager
@@ -57,10 +79,17 @@ final class BackupEngine {
         let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0) })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
 
-        // Find files to copy (new or modified)
+        // Find files to copy (new or modified), filtering out temp/system files
         var filesToCopy: [(source: URL, relativePath: String)] = []
         for fileURL in sourceFiles {
             let relPath = relativePath(from: sourceURL, to: fileURL)
+
+            // Skip temporary and system files
+            if shouldSkipFile(fileURL.path) {
+                logService.log(.debug, category: .backup, message: "Skipping temp/system file: \(relPath)")
+                continue
+            }
+
             let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
 
             if !fm.fileExists(atPath: destFilePath) {
@@ -105,7 +134,7 @@ final class BackupEngine {
 
             do {
                 let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-                try copyFile(from: sourceURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
+                try copyFileWithRetry(from: sourceURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                 filesUpdated += 1
             } catch {
                 let desc = "Failed to copy \(relPath): \(error.localizedDescription)"
@@ -519,6 +548,108 @@ final class BackupEngine {
             if contents?.isEmpty == true {
                 try? fm.removeItem(at: dir)
             }
+        }
+    }
+
+    // MARK: - Stability Helpers
+
+    /// Check if a file should be skipped (temp files, system files, partial downloads).
+    private func shouldSkipFile(_ path: String) -> Bool {
+        let fileName = (path as NSString).lastPathComponent
+
+        for pattern in skipPatterns {
+            if fileName.hasPrefix(pattern) || fileName.hasSuffix(pattern) || fileName.contains(pattern) {
+                return true
+            }
+        }
+
+        // Skip zero-byte files (likely incomplete downloads)
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int64,
+           size == 0 {
+            return true
+        }
+
+        return false
+    }
+
+    /// Copy a file with retry logic for transient errors.
+    private func copyFileWithRetry(from source: String, to destination: String, keepVersions: Bool, backupRoot: String) throws {
+        var lastError: Error?
+
+        for attempt in 1...maxRetryAttempts {
+            do {
+                try copyFile(from: source, to: destination, keepVersions: keepVersions, backupRoot: backupRoot)
+
+                // Verify the copy was successful (size check)
+                if verifyFileCopy(source: source, destination: destination) {
+                    return
+                } else {
+                    throw BackupEngineError.verificationFailed(destination)
+                }
+            } catch {
+                lastError = error
+
+                // Don't retry for certain errors
+                if isNonRetryableError(error) {
+                    throw error
+                }
+
+                if attempt < maxRetryAttempts {
+                    logService.log(.warning, category: .backup,
+                                   message: "Retry \(attempt)/\(maxRetryAttempts) for \((source as NSString).lastPathComponent): \(error.localizedDescription)")
+                    // Brief delay before retry
+                    Thread.sleep(forTimeInterval: Double(attempt) * 0.5)
+                }
+            }
+        }
+
+        throw lastError ?? BackupEngineError.maxRetriesExceeded
+    }
+
+    /// Verify that a file was copied correctly by comparing sizes.
+    private func verifyFileCopy(source: String, destination: String) -> Bool {
+        let fm = FileManager.default
+
+        guard let sourceAttrs = try? fm.attributesOfItem(atPath: source),
+              let destAttrs = try? fm.attributesOfItem(atPath: destination) else {
+            return false
+        }
+
+        let sourceSize = sourceAttrs[.size] as? Int64 ?? -1
+        let destSize = destAttrs[.size] as? Int64 ?? -2
+
+        return sourceSize == destSize && sourceSize >= 0
+    }
+
+    /// Check if an error should not be retried.
+    private func isNonRetryableError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+
+        // Don't retry permission errors, disk full, etc.
+        let nonRetryableCodes: [Int] = [
+            NSFileNoSuchFileError,
+            NSFileWriteNoPermissionError,
+            NSFileWriteOutOfSpaceError,
+            NSFileWriteVolumeReadOnlyError
+        ]
+
+        return nonRetryableCodes.contains(nsError.code)
+    }
+}
+
+// MARK: - Backup Engine Errors
+
+enum BackupEngineError: LocalizedError {
+    case verificationFailed(String)
+    case maxRetriesExceeded
+
+    var errorDescription: String? {
+        switch self {
+        case .verificationFailed(let path):
+            return "File verification failed after copy: \(path)"
+        case .maxRetriesExceeded:
+            return "Maximum retry attempts exceeded"
         }
     }
 }

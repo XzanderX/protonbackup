@@ -69,12 +69,32 @@ final class FileWatcher {
 
     // MARK: - Internal
 
+    /// Patterns for files to ignore (temp files, system files, partial downloads)
+    private static let ignorePatterns: [String] = [
+        "/_versions/",
+        ".DS_Store",
+        ".localized",
+        ".tmp",
+        ".partial",
+        ".download",
+        ".crdownload",
+        "~$",
+        ".~lock.",
+        ".swp",
+        ".swo",
+        "Thumbs.db",
+        "desktop.ini",
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd"
+    ]
+
     fileprivate func handleEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
-        // Filter out events in _versions directory and .DS_Store
+        // Filter out temp files, system files, and version directories
         let relevantPaths = paths.filter { path in
-            !path.contains("/_versions/") &&
-            !path.hasSuffix(".DS_Store") &&
-            !path.hasSuffix(".localized")
+            !Self.ignorePatterns.contains { pattern in
+                path.contains(pattern)
+            }
         }
 
         guard !relevantPaths.isEmpty else { return }
