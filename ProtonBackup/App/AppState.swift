@@ -106,16 +106,22 @@ final class AppState: ObservableObject {
             _ = await notificationService.requestPermission()
         }
 
-        // Initialize sync engine
-        Task {
-            do {
-                try await syncEngine.initialize()
-                logService.log(.info, category: .app, message: "App ready")
-            } catch {
-                logService.log(.error, category: .app,
-                               message: "Failed to initialize sync engine: \(error.localizedDescription)")
-                backupState = .error(message: error.localizedDescription)
+        // Initialize sync engine only for rclone mode (which uses Proton API)
+        // Cloud-verified and local-only modes use the Proton Drive app's local folder
+        if config.useRclone && config.rcloneConfigured {
+            Task {
+                do {
+                    try await syncEngine.initialize()
+                    logService.log(.info, category: .app, message: "App ready (rclone mode)")
+                } catch {
+                    logService.log(.error, category: .app,
+                                   message: "Failed to initialize sync engine: \(error.localizedDescription)")
+                    backupState = .error(message: error.localizedDescription)
+                }
             }
+        } else {
+            // For cloud-verified or local-only modes, we're ready immediately
+            logService.log(.info, category: .app, message: "App ready (local folder mode)")
         }
     }
 
@@ -134,7 +140,15 @@ final class AppState: ObservableObject {
     }
 
     /// Perform a sync-only operation (Proton → local mirror).
+    /// Only available in rclone mode; local folder modes use Proton Drive app for syncing.
     func syncOnly() {
+        // Sync only needed for rclone mode
+        guard config.useRclone && config.rcloneConfigured else {
+            logService.log(.info, category: .sync,
+                           message: "Sync not needed - Proton Drive app handles syncing")
+            return
+        }
+
         guard !syncState.isSyncing else { return }
 
         Task {
@@ -144,22 +158,35 @@ final class AppState: ObservableObject {
 
     // MARK: - Backup cycle
 
-    /// Full backup cycle: sync from Proton, then copy to destination.
+    /// Full backup cycle: sync from Proton (if needed), then copy to destination.
     private func performFullBackupCycle() async {
-        // Phase 1: Sync from Proton to local mirror
-        let syncSummary = await performSync()
+        // Phase 1: Sync from Proton to local mirror (only for rclone mode)
+        // For local folder modes, Proton Drive app handles syncing
+        if config.useRclone && config.rcloneConfigured {
+            let syncSummary = await performSync()
 
-        // Phase 2: Backup from mirror to destination (if connected)
-        guard isDestinationConnected, let destPath = destinationPath else {
-            if syncSummary != nil {
+            // Phase 2: Backup from mirror to destination (if connected)
+            guard isDestinationConnected, let destPath = destinationPath else {
+                if syncSummary != nil {
+                    syncState.pendingBackup = true
+                    logService.log(.info, category: .app,
+                                   message: "Sync complete. Backup queued until destination connects.")
+                }
+                return
+            }
+
+            await performBackup(to: destPath)
+        } else {
+            // For local folder modes, go directly to backup
+            guard isDestinationConnected, let destPath = destinationPath else {
                 syncState.pendingBackup = true
                 logService.log(.info, category: .app,
-                               message: "Sync complete. Backup queued until destination connects.")
+                               message: "Backup queued until destination connects.")
+                return
             }
-            return
-        }
 
-        await performBackup(to: destPath)
+            await performBackup(to: destPath)
+        }
     }
 
     /// Sync from Proton Drive to local mirror.
@@ -429,6 +456,13 @@ final class AppState: ObservableObject {
 
     private func startPollingTimer() {
         pollingTimer?.invalidate()
+
+        // Remote polling only needed for rclone mode which uses Proton API
+        // For local folder modes, FileWatcher detects changes when Proton Drive app syncs
+        guard config.useRclone && config.rcloneConfigured else {
+            logService.log(.debug, category: .app, message: "Polling disabled (local folder mode)")
+            return
+        }
 
         let interval = TimeInterval(config.pollingIntervalMinutes * 60)
         pollingTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
