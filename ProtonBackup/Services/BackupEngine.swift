@@ -64,13 +64,22 @@ final class BackupEngine {
 
         logService.log(.info, category: .backup, message: "Starting backup: \(sourcePath) → \(destinationPath)")
 
+        // Verify source exists
+        guard fm.fileExists(atPath: sourcePath) else {
+            logService.log(.error, category: .backup, message: "Source path does not exist: \(sourcePath)")
+            throw BackupEngineError.sourceNotFound(sourcePath)
+        }
+
         // Ensure destination directory exists
         let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
+        logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
         // Scan source files (excluding _versions directory)
         let sourceURL = URL(fileURLWithPath: sourcePath)
+        logService.log(.info, category: .backup, message: "Scanning source directory: \(sourceURL.path)")
         let sourceFiles = try scanDirectory(sourceURL, excludingPrefix: "_versions")
+        logService.log(.info, category: .backup, message: "Found \(sourceFiles.count) files in source")
 
         // Scan existing destination files
         let destURL = URL(fileURLWithPath: backupRoot)
@@ -244,13 +253,22 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "Starting cloud-verified backup: \(sourcePath) → \(destinationPath)")
 
+        // Verify source exists
+        guard fm.fileExists(atPath: sourcePath) else {
+            logService.log(.error, category: .backup, message: "Source path does not exist: \(sourcePath)")
+            throw BackupEngineError.sourceNotFound(sourcePath)
+        }
+
         // Ensure destination directory exists
         let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
+        logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
         // Scan source files (excluding _versions directory)
         let sourceURL = URL(fileURLWithPath: sourcePath)
+        logService.log(.info, category: .backup, message: "Scanning source directory: \(sourceURL.path)")
         let sourceFiles = try scanDirectory(sourceURL, excludingPrefix: "_versions")
+        logService.log(.info, category: .backup, message: "Found \(sourceFiles.count) files in source")
 
         // Scan existing destination files
         let destURL = URL(fileURLWithPath: backupRoot)
@@ -610,29 +628,43 @@ final class BackupEngine {
         let fm = FileManager.default
         var files: [URL] = []
 
+        // Don't skip hidden files - Proton Drive may use them
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else {
+            logService.log(.warning, category: .backup, message: "Could not create enumerator for: \(url.path)")
             return []
         }
 
         for case let fileURL as URL in enumerator {
             let relPath = relativePath(from: url, to: fileURL)
 
-            // Skip the excluded prefix
+            // Skip the excluded prefix (e.g., _versions)
             if relPath.hasPrefix(excludingPrefix) {
                 enumerator.skipDescendants()
                 continue
             }
 
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
-            if values.isRegularFile == true {
-                files.append(fileURL)
+            // Skip .DS_Store and other system files at scan time
+            let fileName = fileURL.lastPathComponent
+            if fileName == ".DS_Store" || fileName == ".localized" {
+                continue
+            }
+
+            do {
+                let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                if values.isRegularFile == true {
+                    files.append(fileURL)
+                }
+            } catch {
+                // Log but don't fail on individual file errors
+                logService.log(.debug, category: .backup, message: "Could not read attributes for: \(relPath)")
             }
         }
 
+        logService.log(.debug, category: .backup, message: "Scanned \(url.path): found \(files.count) files")
         return files
     }
 
@@ -836,6 +868,7 @@ final class BackupEngine {
 enum BackupEngineError: LocalizedError {
     case verificationFailed(String)
     case maxRetriesExceeded
+    case sourceNotFound(String)
 
     var errorDescription: String? {
         switch self {
@@ -843,6 +876,8 @@ enum BackupEngineError: LocalizedError {
             return "File verification failed after copy: \(path)"
         case .maxRetriesExceeded:
             return "Maximum retry attempts exceeded"
+        case .sourceNotFound(let path):
+            return "Source folder not found: \(path)"
         }
     }
 }
