@@ -48,7 +48,7 @@ final class CloudSyncVerifier {
                     return true  // Downloaded (may need update check)
                 case .notDownloaded:
                     return false // Not downloaded yet
-                @unknown default:
+                default:
                     return false
                 }
             }
@@ -148,7 +148,7 @@ final class CloudSyncVerifier {
                     return .synced
                 case .notDownloaded:
                     return .cloudOnly
-                @unknown default:
+                default:
                     return .unknown
                 }
             }
