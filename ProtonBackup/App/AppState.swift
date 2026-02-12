@@ -258,7 +258,7 @@ final class AppState: ObservableObject {
                     }
                 }
             } else {
-                // Local folder mode: copy directly from Proton Drive app folder
+                // Local folder mode: copy from Proton Drive app folder
                 guard let sourcePath = config.sourcePath else {
                     logService.log(.error, category: .backup, message: "No source path configured")
                     syncState.isBacking = false
@@ -266,21 +266,45 @@ final class AppState: ObservableObject {
                     return
                 }
 
-                summary = try await backupEngine.performBackup(
-                    sourcePath: sourcePath,
-                    destinationPath: destPath,
-                    deletionPolicy: config.deletionPolicy,
-                    keepVersions: config.keepVersions,
-                    pauseChecker: { [weak self] in
-                        self?.syncState.isPaused ?? false
+                if config.requireCloudSync {
+                    // Cloud-verified mode: only backup files confirmed synced with cloud
+                    summary = try await backupEngine.performCloudVerifiedBackup(
+                        sourcePath: sourcePath,
+                        destinationPath: destPath,
+                        deletionPolicy: config.deletionPolicy,
+                        keepVersions: config.keepVersions,
+                        requireSync: true,
+                        pauseChecker: { [weak self] in
+                            self?.syncState.isPaused ?? false
+                        }
+                    ) { [weak self] progress in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            if self.syncState.isPaused {
+                                self.backupState = .paused(progress: progress)
+                            } else {
+                                self.backupState = .backing(progress: progress)
+                            }
+                        }
                     }
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        if self.syncState.isPaused {
-                            self.backupState = .paused(progress: progress)
-                        } else {
-                            self.backupState = .backing(progress: progress)
+                } else {
+                    // Simple local backup: copy all local files without sync verification
+                    summary = try await backupEngine.performBackup(
+                        sourcePath: sourcePath,
+                        destinationPath: destPath,
+                        deletionPolicy: config.deletionPolicy,
+                        keepVersions: config.keepVersions,
+                        pauseChecker: { [weak self] in
+                            self?.syncState.isPaused ?? false
+                        }
+                    ) { [weak self] progress in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            if self.syncState.isPaused {
+                                self.backupState = .paused(progress: progress)
+                            } else {
+                                self.backupState = .backing(progress: progress)
+                            }
                         }
                     }
                 }

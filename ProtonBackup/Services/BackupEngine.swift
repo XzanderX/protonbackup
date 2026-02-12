@@ -11,6 +11,7 @@ final class BackupEngine {
     private let logService: LogService
     private let versionManager: VersionManager
     private let rcloneService = RcloneService.shared
+    private let syncVerifier = CloudSyncVerifier.shared
 
     /// Maximum retry attempts for transient errors
     private let maxRetryAttempts = 3
@@ -191,6 +192,198 @@ final class BackupEngine {
         )
 
         logService.log(.info, category: .backup, message: "Backup complete: \(summary.displayText)")
+        return summary
+    }
+
+    /// Perform a cloud-verified backup from the Proton Drive local folder.
+    /// This method verifies each file is synced with the cloud before backing up.
+    /// Uses macOS FileProvider APIs to check sync status - no authentication needed.
+    /// The official Proton Drive app handles auth (including passkey).
+    ///
+    /// - Parameters:
+    ///   - sourcePath: Path to the Proton Drive local folder
+    ///   - destinationPath: Path to the backup destination
+    ///   - deletionPolicy: How to handle deleted files
+    ///   - keepVersions: Whether to keep old versions
+    ///   - requireSync: If true, skips files not synced; if false, backs up all local files
+    ///   - pauseChecker: Optional closure to check if backup should pause
+    ///   - progressHandler: Progress callback
+    func performCloudVerifiedBackup(
+        sourcePath: String,
+        destinationPath: String,
+        deletionPolicy: DeletionPolicy,
+        keepVersions: Bool,
+        requireSync: Bool = true,
+        pauseChecker: (() -> Bool)? = nil,
+        progressHandler: @escaping (BackupProgress) -> Void
+    ) async throws -> BackupSummary {
+        let startTime = Date()
+        var filesUpdated = 0
+        var filesDeleted = 0
+        var filesSkipped = 0
+        var filesNotSynced = 0
+        var errors: [String] = []
+
+        let fm = FileManager.default
+
+        // First, check overall sync status
+        let syncSummary = syncVerifier.getSyncSummary(forDirectory: sourcePath)
+        logService.log(.info, category: .backup,
+                       message: "Sync status: \(syncSummary.syncedFiles)/\(syncSummary.totalFiles) files synced (\(String(format: "%.1f", syncSummary.syncPercentage))%)")
+
+        if syncSummary.cloudOnlyFiles > 0 {
+            logService.log(.warning, category: .backup,
+                           message: "\(syncSummary.cloudOnlyFiles) files are cloud-only (not downloaded locally)")
+        }
+
+        if syncSummary.downloadingFiles > 0 || syncSummary.uploadingFiles > 0 {
+            logService.log(.info, category: .backup,
+                           message: "\(syncSummary.downloadingFiles) downloading, \(syncSummary.uploadingFiles) uploading")
+        }
+
+        logService.log(.info, category: .backup,
+                       message: "Starting cloud-verified backup: \(sourcePath) → \(destinationPath)")
+
+        // Ensure destination directory exists
+        let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
+        try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
+
+        // Scan source files (excluding _versions directory)
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let sourceFiles = try scanDirectory(sourceURL, excludingPrefix: "_versions")
+
+        // Scan existing destination files
+        let destURL = URL(fileURLWithPath: backupRoot)
+        let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
+
+        // Build relative path sets
+        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0) })
+        let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
+
+        // Find files to copy (new or modified), with sync verification
+        var filesToCopy: [(source: URL, relativePath: String)] = []
+        for fileURL in sourceFiles {
+            let relPath = relativePath(from: sourceURL, to: fileURL)
+
+            // Skip temporary and system files
+            if shouldSkipFile(fileURL.path) {
+                logService.log(.debug, category: .backup, message: "Skipping temp/system file: \(relPath)")
+                continue
+            }
+
+            // Check if file is synced with cloud
+            if requireSync && !syncVerifier.isFileSynced(at: fileURL.path) {
+                filesNotSynced += 1
+                logService.log(.debug, category: .backup, message: "Skipping unsynced file: \(relPath)")
+                continue
+            }
+
+            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
+
+            if !fm.fileExists(atPath: destFilePath) {
+                filesToCopy.append((fileURL, relPath))
+            } else if try needsUpdate(source: fileURL.path, destination: destFilePath) {
+                filesToCopy.append((fileURL, relPath))
+            } else {
+                filesSkipped += 1
+            }
+        }
+
+        // Find files to delete (in destination but not in source)
+        let filesToDelete = destRelative.subtracting(sourceRelative)
+
+        let totalWork = filesToCopy.count + filesToDelete.count
+
+        if totalWork == 0 && filesNotSynced == 0 {
+            logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
+            return BackupSummary(
+                filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
+                errors: [], startTime: startTime, endTime: Date()
+            )
+        }
+
+        logService.log(.info, category: .backup,
+                       message: "\(filesToCopy.count) to copy, \(filesToDelete.count) to delete, \(filesNotSynced) not synced")
+
+        // Copy files
+        var completed = 0
+        for (sourceURL, relPath) in filesToCopy {
+            // Check for pause
+            while pauseChecker?() == true {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+
+            let currentProgress = BackupProgress(
+                totalFiles: totalWork,
+                completedFiles: completed,
+                currentFileName: relPath
+            )
+            progressHandler(currentProgress)
+
+            do {
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                try copyFileWithRetry(from: sourceURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
+                filesUpdated += 1
+            } catch {
+                let desc = "Failed to copy \(relPath): \(error.localizedDescription)"
+                errors.append(desc)
+                logService.log(.error, category: .backup, message: desc, filePath: relPath)
+            }
+
+            completed += 1
+        }
+
+        // Handle deletions
+        for relPath in filesToDelete {
+            while pauseChecker?() == true {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+
+            let currentProgress = BackupProgress(
+                totalFiles: totalWork,
+                completedFiles: completed,
+                currentFileName: relPath
+            )
+            progressHandler(currentProgress)
+
+            do {
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                try handleDeletion(
+                    atPath: destPath,
+                    relativePath: relPath,
+                    policy: deletionPolicy,
+                    keepVersions: keepVersions,
+                    backupRoot: backupRoot
+                )
+                filesDeleted += 1
+            } catch {
+                let desc = "Failed to handle deletion of \(relPath): \(error.localizedDescription)"
+                errors.append(desc)
+                logService.log(.error, category: .backup, message: desc, filePath: relPath)
+            }
+
+            completed += 1
+        }
+
+        // Clean up empty directories
+        cleanEmptyDirectories(at: destURL)
+
+        // Add warning about unsynced files
+        if filesNotSynced > 0 {
+            errors.append("\(filesNotSynced) files were skipped because they're not synced with cloud")
+        }
+
+        let summary = BackupSummary(
+            filesUpdated: filesUpdated,
+            filesDeleted: filesDeleted,
+            filesSkipped: filesSkipped,
+            errors: errors,
+            startTime: startTime,
+            endTime: Date()
+        )
+
+        logService.log(.info, category: .backup,
+                       message: "Cloud-verified backup complete: \(summary.displayText) (\(filesNotSynced) unsynced files skipped)")
         return summary
     }
 

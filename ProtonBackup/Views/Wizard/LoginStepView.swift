@@ -1,41 +1,31 @@
 import SwiftUI
 
-/// Login step: Connect to Proton Drive via rclone or detect local sync folder.
+/// Login step: Select how to connect to Proton Drive.
 /// Supports two modes:
-/// 1. Local folder detection (if Proton Drive app is installed)
-/// 2. Rclone authentication (for cloud-first approach)
+/// 1. Local Folder - Simple backup from Proton Drive app's local folder
+/// 2. Cloud-Verified - Backup from local folder with cloud sync verification
 struct LoginStepView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var wizardState: WizardState
 
     enum ConnectionMode: String, CaseIterable {
-        case local = "Local Folder"
-        case rclone = "Cloud Login"
+        case cloudVerified = "Cloud-Verified"
+        case localOnly = "Local Only"
     }
 
-    @State private var connectionMode: ConnectionMode = .local
+    @State private var connectionMode: ConnectionMode = .cloudVerified
     @State private var isSearching = false
     @State private var detectedPath: String?
     @State private var errorMessage: String?
+    @State private var syncSummary: SyncSummary?
+    @State private var isCheckingSync = false
 
-    // Rclone authentication fields
-    @State private var username = ""
-    @State private var password = ""
-    @State private var showPassword = false
-    @State private var isTesting = false
-    @State private var testResult: TestResult?
-
-    enum TestResult {
-        case success
-        case failure(String)
-    }
-
-    private let rcloneService = RcloneService.shared
+    private let syncVerifier = CloudSyncVerifier.shared
 
     var body: some View {
         VStack(spacing: 20) {
             // Header
-            Image(systemName: connectionMode == .local ? "folder.badge.gearshape" : "cloud.fill")
+            Image(systemName: connectionMode == .cloudVerified ? "checkmark.icloud" : "folder.fill")
                 .font(.system(size: 40))
                 .foregroundColor(.protonPurple)
 
@@ -44,60 +34,69 @@ struct LoginStepView: View {
                 .fontWeight(.semibold)
 
             // Mode picker
-            Picker("Connection Mode", selection: $connectionMode) {
+            Picker("Backup Mode", selection: $connectionMode) {
                 ForEach(ConnectionMode.allCases, id: \.self) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 300)
-            .onChange(of: connectionMode) { _ in
-                // Reset state when switching modes
+            .frame(maxWidth: 320)
+            .onChange(of: connectionMode) { newMode in
+                wizardState.requireCloudSync = (newMode == .cloudVerified)
                 errorMessage = nil
-                testResult = nil
             }
 
             // Mode description
-            Text(connectionMode == .local
-                 ? "Use the local Proton Drive app folder for faster backups."
-                 : "Sign in to access Proton Drive cloud directly via rclone.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
+            modeDescription
 
             Divider()
                 .padding(.vertical, 8)
 
-            // Content based on mode
-            if connectionMode == .local {
-                localFolderContent
-            } else {
-                rcloneLoginContent
-            }
+            // Folder detection content
+            folderContent
 
             Spacer()
 
-            // Help text
-            if connectionMode == .rclone && !rcloneService.isRcloneInstalled() {
-                rcloneNotInstalledWarning
-            }
+            // Info box
+            infoBox
         }
         .onAppear {
-            // Check if rclone is already configured
-            if rcloneService.isConfigured() {
-                connectionMode = .rclone
-                wizardState.useRclone = true
-            } else if !wizardState.isAuthenticated {
+            wizardState.requireCloudSync = (connectionMode == .cloudVerified)
+            if !wizardState.isAuthenticated {
                 detectProtonDriveFolder()
             }
         }
     }
 
-    // MARK: - Local Folder Content
+    // MARK: - Mode Description
 
     @ViewBuilder
-    private var localFolderContent: some View {
+    private var modeDescription: some View {
+        VStack(spacing: 4) {
+            if connectionMode == .cloudVerified {
+                Text("Recommended: Verifies files are synced with cloud before backup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("Works with passkeys, 2FA, and all auth methods.")
+                    .font(.caption2)
+                    .foregroundColor(.protonPurple)
+            } else {
+                Text("Backs up all local files without cloud verification.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("Faster, but may include files not yet synced to cloud.")
+                    .font(.caption2)
+                    .foregroundColor(.statusYellow)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 400)
+    }
+
+    // MARK: - Folder Content
+
+    @ViewBuilder
+    private var folderContent: some View {
         if wizardState.isAuthenticated, let path = wizardState.sourcePath {
             // Folder found/selected
             VStack(spacing: 12) {
@@ -116,6 +115,11 @@ struct LoginStepView: View {
                 .padding(12)
                 .background(Color.secondary.opacity(0.1))
                 .cornerRadius(8)
+
+                // Sync status (for cloud-verified mode)
+                if connectionMode == .cloudVerified {
+                    syncStatusView
+                }
 
                 Button("Choose Different Folder…") {
                     selectFolderManually()
@@ -140,7 +144,7 @@ struct LoginStepView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.protonPurple)
                 } else {
-                    Text("Make sure the Proton Drive app is installed and has synced at least once.")
+                    Text("Make sure the Proton Drive app is installed and signed in.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -172,121 +176,80 @@ struct LoginStepView: View {
         .padding(.top, 8)
     }
 
-    // MARK: - Rclone Login Content
+    // MARK: - Sync Status View
 
     @ViewBuilder
-    private var rcloneLoginContent: some View {
-        VStack(spacing: 16) {
-            // Username field
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Proton Email")
+    private var syncStatusView: some View {
+        if isCheckingSync {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .scaleEffect(0.7)
+                Text("Checking sync status…")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                TextField("user@proton.me", text: $username)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
             }
-            .frame(maxWidth: 350)
-
-            // Password field
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Password")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        } else if let summary = syncSummary {
+            VStack(spacing: 6) {
                 HStack {
-                    if showPassword {
-                        TextField("Password", text: $password)
-                            .textFieldStyle(.roundedBorder)
+                    if summary.allSynced {
+                        Label("All files synced with cloud", systemImage: "checkmark.icloud.fill")
+                            .foregroundColor(.statusGreen)
                     } else {
-                        SecureField("Password", text: $password)
-                            .textFieldStyle(.roundedBorder)
+                        Label("\(summary.syncedFiles)/\(summary.totalFiles) files synced", systemImage: "icloud")
+                            .foregroundColor(.statusYellow)
                     }
-                    Button(action: { showPassword.toggle() }) {
-                        Image(systemName: showPassword ? "eye.slash" : "eye")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
                 }
-            }
-            .frame(maxWidth: 350)
+                .font(.caption)
 
-            // 2FA warning/info
-            VStack(alignment: .leading, spacing: 6) {
-                Label("2FA Account?", systemImage: "lock.shield")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(.statusYellow)
-                Text("If you have 2FA enabled, cloud login won't work for automated backups. Options:")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("• Use \"Local Folder\" mode instead (recommended)")
-                    Text("• Or temporarily disable 2FA in Proton settings")
+                if summary.cloudOnlyFiles > 0 {
+                    Text("\(summary.cloudOnlyFiles) files not downloaded locally")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                if summary.downloadingFiles > 0 || summary.uploadingFiles > 0 {
+                    Text("Syncing in progress…")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Button("Refresh") {
+                    checkSyncStatus()
                 }
                 .font(.caption2)
-                .foregroundColor(.secondary)
             }
             .padding(10)
-            .frame(maxWidth: 350, alignment: .leading)
-            .background(Color.statusYellow.opacity(0.1))
+            .background(summary.allSynced ? Color.statusGreen.opacity(0.1) : Color.statusYellow.opacity(0.1))
             .cornerRadius(8)
-
-            // Test result
-            if let result = testResult {
-                switch result {
-                case .success:
-                    Label("Connected successfully!", systemImage: "checkmark.circle.fill")
-                        .foregroundColor(.statusGreen)
-                case .failure(let error):
-                    Label(error, systemImage: "xmark.circle.fill")
-                        .foregroundColor(.statusRed)
-                        .font(.caption)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 350)
-                }
+        } else {
+            Button("Check Sync Status") {
+                checkSyncStatus()
             }
-
-            // Test connection button
-            Button(action: testConnection) {
-                if isTesting {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                        .frame(width: 120)
-                } else {
-                    Text("Test Connection")
-                        .frame(width: 120)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.protonPurple)
-            .disabled(username.isEmpty || password.isEmpty || isTesting)
+            .font(.caption)
         }
     }
 
-    // MARK: - Rclone Not Installed Warning
+    // MARK: - Info Box
 
-    private var rcloneNotInstalledWarning: some View {
-        VStack(spacing: 8) {
-            Label("rclone not found", systemImage: "exclamationmark.triangle.fill")
-                .foregroundColor(.statusYellow)
+    @ViewBuilder
+    private var infoBox: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("How it works", systemImage: "info.circle")
                 .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.protonPurple)
 
-            Text("Cloud login requires rclone. Install it via Homebrew:")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-
-            Text("brew install rclone")
-                .font(.system(.caption, design: .monospaced))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.15))
-                .cornerRadius(4)
-
-            Link("Or download from rclone.org", destination: URL(string: "https://rclone.org/downloads/")!)
-                .font(.caption2)
+            if connectionMode == .cloudVerified {
+                Text("The Proton Drive app handles authentication (including passkeys). We verify each file is synced with the cloud before backing up, ensuring your backup matches what's stored online.")
+            } else {
+                Text("We copy files from the Proton Drive app's local folder without verifying cloud sync status. This is faster but may include files that haven't been uploaded yet.")
+            }
         }
-        .padding()
-        .background(Color.statusYellow.opacity(0.1))
+        .font(.caption2)
+        .foregroundColor(.secondary)
+        .padding(10)
+        .frame(maxWidth: 380, alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
         .cornerRadius(8)
     }
 
@@ -313,6 +276,7 @@ struct LoginStepView: View {
                         wizardState.sourcePath = fullPath
                         wizardState.isAuthenticated = true
                         wizardState.useRclone = false
+                        wizardState.requireCloudSync = (connectionMode == .cloudVerified)
 
                         // Extract username from folder name
                         let detectedUsername = String(protonFolder.dropFirst("ProtonDrive-".count))
@@ -320,9 +284,14 @@ struct LoginStepView: View {
 
                         appState.logService.log(.info, category: .config,
                             message: "Detected Proton Drive folder: \(fullPath)")
+
+                        // Check sync status if cloud-verified mode
+                        if connectionMode == .cloudVerified {
+                            checkSyncStatus()
+                        }
                     }
                 } else {
-                    errorMessage = "Proton Drive folder not found. Please install the Proton Drive app and sync your files, or select the folder manually."
+                    errorMessage = "Proton Drive folder not found. Please install the Proton Drive app and sign in, or select the folder manually."
                 }
             } catch {
                 errorMessage = "Could not search for Proton Drive folder. Please select it manually."
@@ -353,68 +322,32 @@ struct LoginStepView: View {
             wizardState.sourcePath = url.path
             wizardState.isAuthenticated = true
             wizardState.useRclone = false
+            wizardState.requireCloudSync = (connectionMode == .cloudVerified)
             wizardState.username = url.lastPathComponent
             errorMessage = nil
 
             appState.logService.log(.info, category: .config,
                 message: "Manually selected source folder: \(url.path)")
-        }
-    }
 
-    private func testConnection() {
-        guard !username.isEmpty, !password.isEmpty else { return }
-
-        isTesting = true
-        testResult = nil
-
-        Task {
-            do {
-                // Configure rclone with credentials (no 2FA support for automated backups)
-                try rcloneService.configure(
-                    username: username,
-                    password: password,
-                    twoFactor: nil
-                )
-
-                // Test the connection
-                let success = try await rcloneService.testConnection()
-
-                await MainActor.run {
-                    if success {
-                        handleAuthSuccess()
-                    } else {
-                        testResult = .failure("Connection test failed. Please check your credentials.")
-                    }
-                    isTesting = false
-                }
-            } catch {
-                await MainActor.run {
-                    // Check if it's a 2FA error and give helpful message
-                    let errorMsg = error.localizedDescription
-                    if errorMsg.contains("2fa") || errorMsg.contains("2FA") {
-                        testResult = .failure("This account has 2FA enabled. Please use \"Local Folder\" mode instead, or temporarily disable 2FA in your Proton account settings.")
-                    } else {
-                        testResult = .failure(errorMsg)
-                    }
-                    isTesting = false
-
-                    appState.logService.log(.error, category: .config,
-                        message: "Rclone authentication failed: \(errorMsg)")
-                }
+            // Check sync status if cloud-verified mode
+            if connectionMode == .cloudVerified {
+                checkSyncStatus()
             }
         }
     }
 
-    private func handleAuthSuccess() {
-        testResult = .success
-        wizardState.isAuthenticated = true
-        wizardState.useRclone = true
-        wizardState.username = username
-        wizardState.rcloneConfigured = true
-        // For rclone mode, source path is the remote
-        wizardState.sourcePath = "protondrive:"
+    private func checkSyncStatus() {
+        guard let path = wizardState.sourcePath else { return }
 
-        appState.logService.log(.info, category: .config,
-            message: "Rclone authentication successful for \(username)")
+        isCheckingSync = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let summary = syncVerifier.getSyncSummary(forDirectory: path)
+
+            DispatchQueue.main.async {
+                self.syncSummary = summary
+                self.isCheckingSync = false
+            }
+        }
     }
 }

@@ -63,6 +63,12 @@ struct BackupConfiguration: Codable, Equatable {
     /// Whether rclone has been configured with Proton credentials.
     var rcloneConfigured: Bool
 
+    // MARK: - Cloud verification
+
+    /// Whether to verify files are synced with cloud before backup.
+    /// When enabled, only files confirmed synced by the Proton Drive app are backed up.
+    var requireCloudSync: Bool
+
     // MARK: - Setup state
 
     /// Whether the first-run setup wizard has been completed.
@@ -84,6 +90,7 @@ struct BackupConfiguration: Codable, Equatable {
         lastSuccessfulSync: nil,
         useRclone: false,
         rcloneConfigured: false,
+        requireCloudSync: true,
         setupCompleted: false
     )
 

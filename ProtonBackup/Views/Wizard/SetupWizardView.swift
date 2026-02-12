@@ -77,6 +77,7 @@ struct SetupWizardView: View {
         config.keepVersions = wizardState.keepVersions
         config.useRclone = wizardState.useRclone
         config.rcloneConfigured = wizardState.rcloneConfigured
+        config.requireCloudSync = wizardState.requireCloudSync
         appState.completeSetup(config: config)
     }
 }
@@ -103,6 +104,9 @@ class WizardState: ObservableObject {
     // Rclone state
     @Published var useRclone = false
     @Published var rcloneConfigured = false
+
+    // Cloud sync verification
+    @Published var requireCloudSync = true
 
     // Destination state
     @Published var destinationBookmark: Data?
