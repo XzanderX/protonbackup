@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Login step: Select how to connect to Proton Drive.
 /// Supports two modes:
-/// 1. Local Folder - Simple backup from Proton Drive app's local folder
-/// 2. Cloud-Verified - Backup from local folder with cloud sync verification
+/// 1. Cloud-Verified - Backup from local folder with cloud sync verification at backup time
+/// 2. Local Only - Simple backup from Proton Drive app's local folder
 struct LoginStepView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var wizardState: WizardState
@@ -15,12 +15,7 @@ struct LoginStepView: View {
 
     @State private var connectionMode: ConnectionMode = .cloudVerified
     @State private var isSearching = false
-    @State private var detectedPath: String?
     @State private var errorMessage: String?
-    @State private var syncSummary: SyncSummary?
-    @State private var isCheckingSync = false
-
-    private let syncVerifier = CloudSyncVerifier.shared
 
     var body: some View {
         VStack(spacing: 20) {
@@ -98,7 +93,7 @@ struct LoginStepView: View {
     @ViewBuilder
     private var folderContent: some View {
         if wizardState.isAuthenticated, let path = wizardState.sourcePath {
-            // Folder found/selected
+            // Folder found/selected - ready to continue
             VStack(spacing: 12) {
                 Label("Proton Drive folder found", systemImage: "checkmark.circle.fill")
                     .foregroundColor(.statusGreen)
@@ -116,9 +111,11 @@ struct LoginStepView: View {
                 .background(Color.secondary.opacity(0.1))
                 .cornerRadius(8)
 
-                // Sync status (for cloud-verified mode)
+                // Mode indicator
                 if connectionMode == .cloudVerified {
-                    syncStatusView
+                    Label("Sync verification will happen during backup", systemImage: "info.circle")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
 
                 Button("Choose Different Folder…") {
@@ -176,59 +173,6 @@ struct LoginStepView: View {
         .padding(.top, 8)
     }
 
-    // MARK: - Sync Status View
-
-    @ViewBuilder
-    private var syncStatusView: some View {
-        if isCheckingSync {
-            HStack(spacing: 8) {
-                ProgressView()
-                    .scaleEffect(0.7)
-                Text("Checking sync status…")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        } else if let summary = syncSummary {
-            VStack(spacing: 6) {
-                HStack {
-                    if summary.allSynced {
-                        Label("All files synced with cloud", systemImage: "checkmark.icloud.fill")
-                            .foregroundColor(.statusGreen)
-                    } else {
-                        Label("\(summary.syncedFiles)/\(summary.totalFiles) files synced", systemImage: "icloud")
-                            .foregroundColor(.statusYellow)
-                    }
-                }
-                .font(.caption)
-
-                if summary.cloudOnlyFiles > 0 {
-                    Text("\(summary.cloudOnlyFiles) files not downloaded locally")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-
-                if summary.downloadingFiles > 0 || summary.uploadingFiles > 0 {
-                    Text("Syncing in progress…")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-
-                Button("Refresh") {
-                    checkSyncStatus()
-                }
-                .font(.caption2)
-            }
-            .padding(10)
-            .background(summary.allSynced ? Color.statusGreen.opacity(0.1) : Color.statusYellow.opacity(0.1))
-            .cornerRadius(8)
-        } else {
-            Button("Check Sync Status") {
-                checkSyncStatus()
-            }
-            .font(.caption)
-        }
-    }
-
     // MARK: - Info Box
 
     @ViewBuilder
@@ -240,7 +184,7 @@ struct LoginStepView: View {
                 .foregroundColor(.protonPurple)
 
             if connectionMode == .cloudVerified {
-                Text("The Proton Drive app handles authentication (including passkeys). We verify each file is synced with the cloud before backing up, ensuring your backup matches what's stored online.")
+                Text("The Proton Drive app handles authentication (including passkeys). During backup, we verify each file is synced with the cloud, ensuring your backup matches what's stored online.")
             } else {
                 Text("We copy files from the Proton Drive app's local folder without verifying cloud sync status. This is faster but may include files that haven't been uploaded yet.")
             }
@@ -259,7 +203,7 @@ struct LoginStepView: View {
         isSearching = true
         errorMessage = nil
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
             let fileManager = FileManager.default
 
@@ -284,11 +228,6 @@ struct LoginStepView: View {
 
                         appState.logService.log(.info, category: .config,
                             message: "Detected Proton Drive folder: \(fullPath)")
-
-                        // Check sync status if cloud-verified mode
-                        if connectionMode == .cloudVerified {
-                            checkSyncStatus()
-                        }
                     }
                 } else {
                     errorMessage = "Proton Drive folder not found. Please install the Proton Drive app and sign in, or select the folder manually."
@@ -328,26 +267,6 @@ struct LoginStepView: View {
 
             appState.logService.log(.info, category: .config,
                 message: "Manually selected source folder: \(url.path)")
-
-            // Check sync status if cloud-verified mode
-            if connectionMode == .cloudVerified {
-                checkSyncStatus()
-            }
-        }
-    }
-
-    private func checkSyncStatus() {
-        guard let path = wizardState.sourcePath else { return }
-
-        isCheckingSync = true
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let summary = syncVerifier.getSyncSummary(forDirectory: path)
-
-            DispatchQueue.main.async {
-                self.syncSummary = summary
-                self.isCheckingSync = false
-            }
         }
     }
 }
