@@ -248,15 +248,30 @@ final class CloudSyncVerifier {
 
     /// Check if a file is cloud-only (not downloaded locally).
     /// Returns true if the file exists but has no local content (cloud placeholder).
+    /// IMPORTANT: This method only reads metadata - it does NOT trigger downloads.
     func isCloudOnly(at path: String) -> Bool {
+        // First, try the simplest check: does the file have actual content locally?
+        // This avoids using any ubiquitous item APIs that might trigger downloads
+        if let attrs = try? fileManager.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int64 {
+            // If local size is > 0, the file has content - not cloud-only
+            if size > 0 {
+                return false
+            }
+            // If local size is 0 and it's in CloudStorage, it's cloud-only
+            if size == 0 && path.contains("/Library/CloudStorage/") {
+                return true
+            }
+        }
+
+        // If we couldn't get attributes via FileManager, try URL resourceValues
         let url = URL(fileURLWithPath: path)
 
         do {
             let values = try url.resourceValues(forKeys: [
                 .ubiquitousItemDownloadingStatusKey,
                 .isUbiquitousItemKey,
-                .fileSizeKey,
-                .totalFileSizeKey
+                .fileSizeKey
             ])
 
             // Check ubiquitous item status if available
@@ -266,26 +281,16 @@ final class CloudSyncVerifier {
                 }
             }
 
-            // Fallback: Check if file appears to be a placeholder
-            // Cloud-only files often have 0 local size but non-zero total size
+            // Check file size
             let localSize = values.fileSize ?? 0
-            let totalSize = values.totalFileSize ?? localSize
-
-            if localSize == 0 && totalSize > 0 {
-                return true
-            }
-
-            // Another indicator: file exists but has 0 size and is in CloudStorage path
             if localSize == 0 && path.contains("/Library/CloudStorage/") {
                 return true
             }
 
             return false
         } catch {
-            // If we can't read attributes, check file size directly
-            if let attrs = try? fileManager.attributesOfItem(atPath: path),
-               let size = attrs[.size] as? Int64,
-               size == 0 && path.contains("/Library/CloudStorage/") {
+            // If file doesn't exist locally but is in CloudStorage path, assume cloud-only
+            if path.contains("/Library/CloudStorage/") && !fileManager.fileExists(atPath: path) {
                 return true
             }
             return false

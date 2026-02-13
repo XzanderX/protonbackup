@@ -548,10 +548,10 @@ final class BackupEngine {
         var completed = 0
 
         // ============================================
-        // PHASE 0: Create complete folder structure
+        // PHASE 0: Create complete folder structure (NO DOWNLOADS)
         // ============================================
         logService.log(.info, category: .backup,
-                       message: "Phase 0: Creating folder structure for \(localFilesToBackup.count + cloudOnlyFilesToBackup.count) files...")
+                       message: "Phase 0: Creating folder structure (no downloads yet)...")
 
         // Create folders for all files that need backup
         var foldersCreated = Set<String>()
@@ -588,11 +588,11 @@ final class BackupEngine {
                        message: "Phase 0 complete: \(foldersCreated.count) folders, \(placeholdersCreated) placeholders created")
 
         // ============================================
-        // PHASE 1: Backup all LOCAL files first (priority)
+        // PHASE 1: Backup LOCAL files only (no downloads, just copy already-downloaded files)
         // ============================================
         if !localFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
-                           message: "Phase 1: Backing up \(localFilesToBackup.count) local files...")
+                           message: "Phase 1: Copying \(localFilesToBackup.count) local files (no downloads)...")
 
             for (fileURL, relPath) in localFilesToBackup {
                 // Check for pause
@@ -625,11 +625,11 @@ final class BackupEngine {
         }
 
         // ============================================
-        // PHASE 2: Download and backup cloud-only files
+        // PHASE 2: NOW download cloud-only files (this is when downloads start)
         // ============================================
         if !cloudOnlyFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
-                           message: "Phase 2: Downloading and backing up \(cloudOnlyFilesToBackup.count) cloud-only files...")
+                           message: "Phase 2: NOW downloading \(cloudOnlyFilesToBackup.count) cloud-only files (downloads start here)...")
 
             for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
                 // Check for pause
@@ -745,12 +745,14 @@ final class BackupEngine {
 
     /// Scan directory including cloud-only placeholder files.
     /// Uses recursive directory listing instead of enumerator for better CloudStorage compatibility.
+    /// IMPORTANT: This scan is READ-ONLY and does NOT trigger any downloads.
+    /// Downloads only happen later in Phase 2 via explicit requestDownloadAndWait().
     private func scanDirectoryIncludingCloudOnly(_ url: URL, excludingPrefix: String) throws -> [URL] {
         let fm = FileManager.default
         var files: [URL] = []
         var directoriesScanned = 0
 
-        logService.log(.debug, category: .backup, message: "Starting scan of: \(url.path)")
+        logService.log(.debug, category: .backup, message: "Starting scan of: \(url.path) (read-only, no downloads)")
 
         // Verify the directory exists
         var isDir: ObjCBool = false
@@ -760,10 +762,11 @@ final class BackupEngine {
         }
 
         // Use recursive helper function instead of enumerator (more reliable for CloudStorage)
+        // This only reads directory listings - never triggers downloads
         func scanRecursively(directory: URL, relativeTo baseURL: URL) {
             let dirPath = directory.path
 
-            // Get directory contents
+            // Get directory contents - this is a metadata-only operation
             guard let contents = try? fm.contentsOfDirectory(atPath: dirPath) else {
                 logService.log(.warning, category: .backup, message: "Could not list directory: \(dirPath)")
                 return
@@ -785,33 +788,29 @@ final class BackupEngine {
                     continue
                 }
 
-                // Check if it's a directory or file
+                // Check if it's a directory or file using fileExists only (no resourceValues to avoid triggering downloads)
                 var itemIsDir: ObjCBool = false
                 let exists = fm.fileExists(atPath: itemURL.path, isDirectory: &itemIsDir)
 
-                if !exists {
-                    // Item doesn't exist locally - might be a cloud-only placeholder
-                    // Try to get info via resource values
-                    do {
-                        let values = try itemURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
-                        if values.isDirectory == true {
-                            directoriesScanned += 1
-                            scanRecursively(directory: itemURL, relativeTo: baseURL)
-                        } else {
-                            files.append(itemURL)
-                        }
-                    } catch {
-                        // Can't determine type, assume file
+                if exists {
+                    if itemIsDir.boolValue {
+                        directoriesScanned += 1
+                        scanRecursively(directory: itemURL, relativeTo: baseURL)
+                    } else {
                         files.append(itemURL)
                     }
-                    continue
-                }
-
-                if itemIsDir.boolValue {
-                    directoriesScanned += 1
-                    scanRecursively(directory: itemURL, relativeTo: baseURL)
                 } else {
-                    files.append(itemURL)
+                    // Item listed in directory but doesn't "exist" locally
+                    // This is a cloud-only file - add it without checking resourceValues
+                    // We'll determine if it's a directory by trying to list its contents
+                    if let _ = try? fm.contentsOfDirectory(atPath: itemURL.path) {
+                        // It's a directory (cloud-only directory)
+                        directoriesScanned += 1
+                        scanRecursively(directory: itemURL, relativeTo: baseURL)
+                    } else {
+                        // It's a file (cloud-only file)
+                        files.append(itemURL)
+                    }
                 }
             }
         }
