@@ -715,11 +715,11 @@ final class BackupEngine {
     }
 
     /// Scan directory including cloud-only placeholder files.
+    /// Uses recursive directory listing instead of enumerator for better CloudStorage compatibility.
     private func scanDirectoryIncludingCloudOnly(_ url: URL, excludingPrefix: String) throws -> [URL] {
         let fm = FileManager.default
         var files: [URL] = []
         var directoriesScanned = 0
-        var itemsEnumerated = 0
 
         logService.log(.debug, category: .backup, message: "Starting scan of: \(url.path)")
 
@@ -730,95 +730,72 @@ final class BackupEngine {
             return []
         }
 
-        // List immediate contents first for debugging
+        // Use recursive helper function instead of enumerator (more reliable for CloudStorage)
+        func scanRecursively(directory: URL, relativeTo baseURL: URL) {
+            let dirPath = directory.path
+
+            // Get directory contents
+            guard let contents = try? fm.contentsOfDirectory(atPath: dirPath) else {
+                logService.log(.warning, category: .backup, message: "Could not list directory: \(dirPath)")
+                return
+            }
+
+            logService.log(.debug, category: .backup, message: "Scanning \(directory.lastPathComponent): \(contents.count) items")
+
+            for itemName in contents {
+                // Skip system files
+                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" {
+                    continue
+                }
+
+                let itemURL = directory.appendingPathComponent(itemName)
+                let relPath = relativePath(from: baseURL, to: itemURL)
+
+                // Skip excluded prefix
+                if relPath.hasPrefix(excludingPrefix) {
+                    continue
+                }
+
+                // Check if it's a directory or file
+                var itemIsDir: ObjCBool = false
+                let exists = fm.fileExists(atPath: itemURL.path, isDirectory: &itemIsDir)
+
+                if !exists {
+                    // Item doesn't exist locally - might be a cloud-only placeholder
+                    // Try to get info via resource values
+                    do {
+                        let values = try itemURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                        if values.isDirectory == true {
+                            directoriesScanned += 1
+                            scanRecursively(directory: itemURL, relativeTo: baseURL)
+                        } else {
+                            files.append(itemURL)
+                        }
+                    } catch {
+                        // Can't determine type, assume file
+                        files.append(itemURL)
+                    }
+                    continue
+                }
+
+                if itemIsDir.boolValue {
+                    directoriesScanned += 1
+                    scanRecursively(directory: itemURL, relativeTo: baseURL)
+                } else {
+                    files.append(itemURL)
+                }
+            }
+        }
+
+        // List top-level contents for debugging
         if let contents = try? fm.contentsOfDirectory(atPath: url.path) {
             logService.log(.debug, category: .backup, message: "Top-level contents (\(contents.count) items): \(contents.prefix(10).joined(separator: ", "))\(contents.count > 10 ? "..." : "")")
         }
 
-        // Use options that include cloud-only files
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [
-                .isRegularFileKey,
-                .isDirectoryKey,
-                .ubiquitousItemDownloadingStatusKey,
-                .isUbiquitousItemKey,
-                .fileSizeKey
-            ],
-            options: [] // Don't skip anything
-        ) else {
-            logService.log(.warning, category: .backup, message: "Could not create enumerator for: \(url.path)")
-            return []
-        }
+        // Start recursive scan
+        scanRecursively(directory: url, relativeTo: url)
 
-        for case let fileURL as URL in enumerator {
-            itemsEnumerated += 1
-            let relPath = relativePath(from: url, to: fileURL)
-
-            // Skip the excluded prefix (e.g., _versions)
-            if relPath.hasPrefix(excludingPrefix) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            // Only skip specific system files, not all hidden files
-            let fileName = fileURL.lastPathComponent
-            if fileName == ".DS_Store" || fileName == ".localized" || fileName == ".Spotlight-V100" || fileName == ".Trashes" || fileName == ".fseventsd" {
-                if fileName == ".Spotlight-V100" || fileName == ".Trashes" || fileName == ".fseventsd" {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-
-            do {
-                let values = try fileURL.resourceValues(forKeys: [
-                    .isRegularFileKey,
-                    .isDirectoryKey,
-                    .ubiquitousItemDownloadingStatusKey,
-                    .isUbiquitousItemKey
-                ])
-
-                let isDirectory = values.isDirectory == true
-                let isRegularFile = values.isRegularFile == true
-                let isUbiquitous = values.isUbiquitousItem == true
-                let downloadStatus = values.ubiquitousItemDownloadingStatus
-
-                if isDirectory {
-                    directoriesScanned += 1
-                    continue
-                }
-
-                // Include regular files
-                if isRegularFile {
-                    files.append(fileURL)
-                    continue
-                }
-
-                // For ubiquitous items that aren't regular files, they might be cloud-only
-                if isUbiquitous {
-                    // Cloud-only files that aren't downloaded yet
-                    if downloadStatus == .notDownloaded || downloadStatus == .current {
-                        files.append(fileURL)
-                        continue
-                    }
-                }
-
-                // Fallback: if it's not a directory, treat it as a file
-                if !isDirectory {
-                    files.append(fileURL)
-                }
-
-            } catch {
-                // If we can't read attributes, still try to include non-directories
-                var isItemDir: ObjCBool = false
-                if fm.fileExists(atPath: fileURL.path, isDirectory: &isItemDir) && !isItemDir.boolValue {
-                    files.append(fileURL)
-                    logService.log(.debug, category: .backup, message: "Added file with unreadable attributes: \(relPath)")
-                }
-            }
-        }
-
-        logService.log(.info, category: .backup, message: "Scan complete: \(itemsEnumerated) items enumerated, \(directoriesScanned) directories, \(files.count) files found")
+        logService.log(.info, category: .backup, message: "Scan complete: \(directoriesScanned) directories, \(files.count) files found")
         return files
     }
 
