@@ -406,12 +406,8 @@ final class BackupEngine {
     }
 
     /// Perform an on-demand backup that respects the user's Proton Drive sync settings.
-    /// This smart backup uses a three-phase approach:
-    /// 1. Phase 0: Create full folder structure with zero-byte placeholders for cloud-only files
-    /// 2. Phase 1: Backup all local files (already downloaded) - PRIORITY
-    /// 3. Phase 2: Download cloud-only files and replace placeholders
-    ///
-    /// This ensures the user immediately sees the complete structure, with files filled in progressively.
+    /// Creates placeholders in real-time as files are discovered (immediate visual feedback).
+    /// Then copies local files, then downloads cloud files.
     func performOnDemandBackup(
         sourcePath: String,
         destinationPath: String,
@@ -428,6 +424,7 @@ final class BackupEngine {
         var filesDownloaded = 0
         var filesOffloaded = 0
         var placeholdersCreated = 0
+        var foldersCreated = 0
         var errors: [String] = []
 
         let fm = FileManager.default
@@ -447,17 +444,11 @@ final class BackupEngine {
         let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
-        // Scan source - this includes cloud-only files (they appear as placeholders)
         let sourceURL = URL(fileURLWithPath: sourcePath)
-        logService.log(.info, category: .backup, message: "Scanning source directory (including cloud-only files)...")
-        let allSourceFiles = try scanDirectoryIncludingCloudOnly(sourceURL, excludingPrefix: "_versions")
-        logService.log(.info, category: .backup, message: "Found \(allSourceFiles.count) files in source")
-
-        // Scan existing destination files
         let destURL = URL(fileURLWithPath: backupRoot)
-        let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
-        // Build destination lookup by relative path with sizes
+        // Get existing destination files for comparison
+        let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
         var destFileSizes: [String: Int64] = [:]
         for destFile in destFiles {
             let relPath = relativePath(from: destURL, to: destFile)
@@ -467,136 +458,142 @@ final class BackupEngine {
             }
         }
 
-        // Categorize files into local and cloud-only, checking what needs backup
+        // ============================================
+        // PHASE 0: Scan AND create placeholders in real-time
+        // User sees structure building as we discover files
+        // ============================================
+        logService.log(.info, category: .backup,
+                       message: "Phase 0: Scanning and creating structure (no downloads)...")
+
         var localFilesToBackup: [(url: URL, relPath: String)] = []
         var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
+        var createdFolders = Set<String>()
 
-        for fileURL in allSourceFiles {
-            let relPath = relativePath(from: sourceURL, to: fileURL)
+        // Recursive scan that creates placeholders as it goes
+        func scanAndCreatePlaceholders(directory: URL) {
+            let dirPath = directory.path
 
-            // Skip temp/system files (but not zero-byte files since cloud-only files appear as such)
-            if shouldSkipFile(fileURL.path, skipZeroByteFiles: false) {
-                continue
+            guard let contents = try? fm.contentsOfDirectory(atPath: dirPath) else {
+                return
             }
 
-            let isCloudOnly = syncVerifier.isCloudOnly(at: fileURL.path)
-            let cloudSize = syncVerifier.getCloudFileSize(at: fileURL.path)
-            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
-
-            // Check if this file needs backup
-            let needsBackup: Bool
-            if let existingSize = destFileSizes[relPath] {
-                if let size = cloudSize {
-                    // Compare cloud size with destination size
-                    // If dest is 0 (placeholder), it needs backup
-                    needsBackup = (size != existingSize) || existingSize == 0
-                } else if !isCloudOnly {
-                    // Local file - compare normally
-                    needsBackup = (try? needsUpdate(source: fileURL.path, destination: destFilePath)) ?? true
-                } else {
-                    needsBackup = true
+            for itemName in contents {
+                // Skip system files
+                if itemName == ".DS_Store" || itemName == ".localized" ||
+                   itemName == ".Spotlight-V100" || itemName == ".Trashes" ||
+                   itemName == ".fseventsd" || itemName == ".Trash" {
+                    continue
                 }
-            } else {
-                // File doesn't exist in destination
-                needsBackup = true
-            }
 
-            if !needsBackup {
-                filesSkipped += 1
-                continue
-            }
+                let itemURL = directory.appendingPathComponent(itemName)
+                let relPath = relativePath(from: sourceURL, to: itemURL)
 
-            if isCloudOnly {
-                cloudOnlyFilesToBackup.append((fileURL, relPath, cloudSize))
-            } else {
-                localFilesToBackup.append((fileURL, relPath))
+                // Skip _versions
+                if relPath.hasPrefix("_versions") {
+                    continue
+                }
+
+                var itemIsDir: ObjCBool = false
+                let exists = fm.fileExists(atPath: itemURL.path, isDirectory: &itemIsDir)
+
+                if exists && itemIsDir.boolValue {
+                    // It's a directory - create it on destination immediately
+                    let destDirPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    if !createdFolders.contains(destDirPath) {
+                        try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
+                        createdFolders.insert(destDirPath)
+                        foldersCreated += 1
+                    }
+                    // Recurse into subdirectory
+                    scanAndCreatePlaceholders(directory: itemURL)
+                } else {
+                    // It's a file (or cloud-only placeholder)
+                    // Skip temp/system files
+                    if shouldSkipFile(itemURL.path, skipZeroByteFiles: false) {
+                        continue
+                    }
+
+                    let isCloudOnly = syncVerifier.isCloudOnly(at: itemURL.path)
+                    let cloudSize = syncVerifier.getCloudFileSize(at: itemURL.path)
+                    let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    let destParent = (destFilePath as NSString).deletingLastPathComponent
+
+                    // Create parent folder if needed
+                    if !createdFolders.contains(destParent) {
+                        try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+                        createdFolders.insert(destParent)
+                        foldersCreated += 1
+                    }
+
+                    // Check if this file needs backup
+                    let needsBackup: Bool
+                    if let existingSize = destFileSizes[relPath] {
+                        if let size = cloudSize, size > 0 {
+                            needsBackup = (size != existingSize) || existingSize == 0
+                        } else if !isCloudOnly {
+                            needsBackup = (try? needsUpdate(source: itemURL.path, destination: destFilePath)) ?? true
+                        } else {
+                            needsBackup = true
+                        }
+                    } else {
+                        needsBackup = true
+                    }
+
+                    if !needsBackup {
+                        filesSkipped += 1
+                        continue
+                    }
+
+                    // Create zero-byte placeholder immediately so user sees the file
+                    if !fm.fileExists(atPath: destFilePath) {
+                        fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
+                        placeholdersCreated += 1
+                    }
+
+                    // Categorize for later phases
+                    if isCloudOnly {
+                        cloudOnlyFilesToBackup.append((itemURL, relPath, cloudSize))
+                    } else {
+                        localFilesToBackup.append((itemURL, relPath))
+                    }
+
+                    // Update progress
+                    let currentProgress = BackupProgress(
+                        totalFiles: placeholdersCreated,
+                        completedFiles: 0,
+                        currentFileName: "📁 \(relPath)"
+                    )
+                    progressHandler(currentProgress)
+                }
             }
         }
 
-        // Log categorization results
+        // Start the scan (creates placeholders in real-time)
+        scanAndCreatePlaceholders(directory: sourceURL)
+
         logService.log(.info, category: .backup,
-                       message: "Categorized \(allSourceFiles.count) files: \(localFilesToBackup.count) local, \(cloudOnlyFilesToBackup.count) cloud-only, \(filesSkipped) skipped")
-
-        // Log first few files for debugging
-        if !localFilesToBackup.isEmpty {
-            let sampleLocal = localFilesToBackup.prefix(3).map { $0.relPath }.joined(separator: ", ")
-            logService.log(.debug, category: .backup, message: "Sample local files: \(sampleLocal)")
-        }
-        if !cloudOnlyFilesToBackup.isEmpty {
-            let sampleCloud = cloudOnlyFilesToBackup.prefix(3).map { $0.relPath }.joined(separator: ", ")
-            logService.log(.debug, category: .backup, message: "Sample cloud-only files: \(sampleCloud)")
-        }
+                       message: "Phase 0 complete: \(foldersCreated) folders, \(placeholdersCreated) placeholders created")
+        logService.log(.info, category: .backup,
+                       message: "Files to process: \(localFilesToBackup.count) local, \(cloudOnlyFilesToBackup.count) cloud-only")
 
         // Calculate files to delete
-        let sourceRelative = Set(allSourceFiles.map { relativePath(from: sourceURL, to: $0) })
+        let sourceRelative = Set(localFilesToBackup.map { $0.relPath } + cloudOnlyFilesToBackup.map { $0.relPath })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
         let filesToDelete = destRelative.subtracting(sourceRelative)
 
         let totalWork = localFilesToBackup.count + cloudOnlyFilesToBackup.count + filesToDelete.count
+        var completed = 0
 
-        if totalWork == 0 {
-            logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed (all \(filesSkipped) files skipped)")
+        if totalWork == 0 && placeholdersCreated == 0 {
+            logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
 
-        logService.log(.info, category: .backup,
-                       message: "\(localFilesToBackup.count) local + \(cloudOnlyFilesToBackup.count) cloud-only files to backup, \(filesToDelete.count) to delete")
-
-        var completed = 0
-
         // ============================================
-        // PHASE 0: Create complete folder structure with ALL files as zero-byte placeholders
-        // This lets the user see the full structure immediately before any copying starts
-        // ============================================
-        logService.log(.info, category: .backup,
-                       message: "Phase 0: Creating complete folder structure with placeholders...")
-
-        var foldersCreated = Set<String>()
-
-        // Create folders and zero-byte placeholders for LOCAL files
-        for (_, relPath) in localFilesToBackup {
-            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-            let destParent = (destPath as NSString).deletingLastPathComponent
-
-            // Create parent directory
-            if !foldersCreated.contains(destParent) {
-                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
-                foldersCreated.insert(destParent)
-            }
-
-            // Create zero-byte placeholder if file doesn't exist
-            if !fm.fileExists(atPath: destPath) {
-                fm.createFile(atPath: destPath, contents: nil, attributes: nil)
-                placeholdersCreated += 1
-            }
-        }
-
-        // Create folders and zero-byte placeholders for CLOUD-ONLY files
-        for (_, relPath, _) in cloudOnlyFilesToBackup {
-            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-            let destParent = (destPath as NSString).deletingLastPathComponent
-
-            // Create parent directory
-            if !foldersCreated.contains(destParent) {
-                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
-                foldersCreated.insert(destParent)
-            }
-
-            // Create zero-byte placeholder if file doesn't exist
-            if !fm.fileExists(atPath: destPath) {
-                fm.createFile(atPath: destPath, contents: nil, attributes: nil)
-                placeholdersCreated += 1
-            }
-        }
-
-        logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated.count) folders, \(placeholdersCreated) placeholders for ALL files")
-
-        // ============================================
-        // PHASE 1: Backup LOCAL files only (no downloads, just copy already-downloaded files)
+        // PHASE 1: Copy LOCAL files (replace placeholders with actual content)
         // ============================================
         if !localFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
