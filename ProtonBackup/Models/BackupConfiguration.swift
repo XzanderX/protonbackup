@@ -69,6 +69,18 @@ struct BackupConfiguration: Codable, Equatable {
     /// When enabled, only files confirmed synced by the Proton Drive app are backed up.
     var requireCloudSync: Bool
 
+    // MARK: - On-demand backup
+
+    /// Whether to use on-demand backup mode.
+    /// When enabled, downloads cloud-only files as needed and optionally offloads after backup.
+    /// This respects the user's Proton Drive sync settings.
+    var onDemandDownload: Bool
+
+    /// Whether to offload (evict) files after backup to free up local space.
+    /// Only applies to files that were downloaded for backup.
+    /// This helps respect the user's Proton Drive storage settings.
+    var offloadAfterBackup: Bool
+
     // MARK: - Setup state
 
     /// Whether the first-run setup wizard has been completed.
@@ -91,6 +103,8 @@ struct BackupConfiguration: Codable, Equatable {
         useRclone: false,
         rcloneConfigured: false,
         requireCloudSync: true,
+        onDemandDownload: true,
+        offloadAfterBackup: false,
         setupCompleted: false
     )
 

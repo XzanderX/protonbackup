@@ -172,12 +172,31 @@ final class CloudSyncVerifier {
 
         do {
             try fileManager.startDownloadingUbiquitousItem(at: url)
-            logService.log(.info, category: .sync, message: "Requested download: \(path)")
+            logService.log(.debug, category: .sync, message: "Requested download: \((path as NSString).lastPathComponent)")
         } catch {
             logService.log(.warning, category: .sync,
                            message: "Failed to request download for \(path): \(error.localizedDescription)")
             throw error
         }
+    }
+
+    /// Request download and wait for completion.
+    /// Returns true if file was successfully downloaded within timeout.
+    func requestDownloadAndWait(at path: String, timeout: TimeInterval = 120) async -> Bool {
+        // If already synced, no need to download
+        if isFileSynced(at: path) {
+            return true
+        }
+
+        // Request the download
+        do {
+            try requestDownload(at: path)
+        } catch {
+            return false
+        }
+
+        // Wait for completion
+        return await waitForSync(at: path, timeout: timeout)
     }
 
     /// Wait for a file to be fully synced (with timeout).
@@ -194,6 +213,79 @@ final class CloudSyncVerifier {
         }
 
         return false
+    }
+
+    /// Evict (offload) a file to free up local space.
+    /// The file will become cloud-only and can be downloaded again later.
+    /// This respects the user's Proton Drive settings.
+    func evictFile(at path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+
+        do {
+            // Check if file is cloud-managed
+            let values = try url.resourceValues(forKeys: [.isUbiquitousItemKey])
+            guard values.isUbiquitousItem == true else {
+                // Not a cloud-managed file, can't evict
+                return false
+            }
+
+            // Evict the file (make it cloud-only)
+            try fileManager.evictUbiquitousItem(at: url)
+            logService.log(.debug, category: .sync, message: "Evicted file: \((path as NSString).lastPathComponent)")
+            return true
+        } catch {
+            logService.log(.debug, category: .sync,
+                           message: "Could not evict \((path as NSString).lastPathComponent): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Check if a file is cloud-only (not downloaded locally).
+    func isCloudOnly(at path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+
+        do {
+            let values = try url.resourceValues(forKeys: [
+                .ubiquitousItemDownloadingStatusKey,
+                .isUbiquitousItemKey
+            ])
+
+            // Must be a ubiquitous (cloud-managed) item
+            guard values.isUbiquitousItem == true else {
+                return false
+            }
+
+            if let downloadStatus = values.ubiquitousItemDownloadingStatus {
+                return downloadStatus == .notDownloaded
+            }
+
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    /// Get file size even for cloud-only files (from metadata).
+    func getCloudFileSize(at path: String) -> Int64? {
+        let url = URL(fileURLWithPath: path)
+
+        do {
+            let values = try url.resourceValues(forKeys: [
+                .fileSizeKey,
+                .totalFileSizeKey
+            ])
+
+            // totalFileSize includes cloud file size
+            if let size = values.totalFileSize {
+                return Int64(size)
+            }
+            if let size = values.fileSize {
+                return Int64(size)
+            }
+            return nil
+        } catch {
+            return nil
+        }
     }
 
     /// Get summary of sync status for a directory.

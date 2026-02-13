@@ -293,7 +293,29 @@ final class AppState: ObservableObject {
                     return
                 }
 
-                if config.requireCloudSync {
+                if config.onDemandDownload {
+                    // On-demand mode: download cloud-only files as needed, optionally offload after
+                    // This respects user's Proton Drive sync settings
+                    summary = try await backupEngine.performOnDemandBackup(
+                        sourcePath: sourcePath,
+                        destinationPath: destPath,
+                        deletionPolicy: config.deletionPolicy,
+                        keepVersions: config.keepVersions,
+                        offloadAfterBackup: config.offloadAfterBackup,
+                        pauseChecker: { [weak self] in
+                            self?.syncState.isPaused ?? false
+                        }
+                    ) { [weak self] progress in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            if self.syncState.isPaused {
+                                self.backupState = .paused(progress: progress)
+                            } else {
+                                self.backupState = .backing(progress: progress)
+                            }
+                        }
+                    }
+                } else if config.requireCloudSync {
                     // Cloud-verified mode: only backup files confirmed synced with cloud
                     summary = try await backupEngine.performCloudVerifiedBackup(
                         sourcePath: sourcePath,

@@ -161,6 +161,38 @@ struct BackupSettingsView: View {
             } header: {
                 Text("Deletion & Versioning")
             }
+
+            Section {
+                Toggle("Smart on-demand backup", isOn: Binding(
+                    get: { appState.config.onDemandDownload },
+                    set: { newValue in
+                        appState.config.onDemandDownload = newValue
+                        appState.saveConfig()
+                    }
+                ))
+
+                Text("Downloads cloud-only files as needed for backup. Only downloads files that have changed since last backup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if appState.config.onDemandDownload {
+                    Toggle("Offload after backup", isOn: Binding(
+                        get: { appState.config.offloadAfterBackup },
+                        set: { newValue in
+                            appState.config.offloadAfterBackup = newValue
+                            appState.saveConfig()
+                        }
+                    ))
+
+                    Text("Removes downloaded files after backup to free up local space. Respects your Proton Drive sync settings.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("Smart Backup")
+            } footer: {
+                Text("Ideal for users who keep only some folders downloaded locally in Proton Drive.")
+            }
         }
         .formStyle(.grouped)
     }
