@@ -134,8 +134,6 @@ final class AppState: ObservableObject {
             return
         }
 
-        // Set lock immediately to prevent race conditions
-        syncState.isBacking = true
         logService.log(.info, category: .app, message: "Starting backup cycle...")
 
         Task {

@@ -1046,47 +1046,54 @@ final class BackupEngine {
     // MARK: - Private
 
     /// Recursively scan a directory for all files (not directories).
+    /// Uses recursive directory listing for better CloudStorage compatibility.
     private func scanDirectory(_ url: URL, excludingPrefix: String) throws -> [URL] {
         let fm = FileManager.default
         var files: [URL] = []
+        var directoriesScanned = 0
 
-        // Don't skip hidden files - Proton Drive may use them
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: []
-        ) else {
-            logService.log(.warning, category: .backup, message: "Could not create enumerator for: \(url.path)")
+        // Verify the directory exists
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+            logService.log(.warning, category: .backup, message: "Not a directory: \(url.path)")
             return []
         }
 
-        for case let fileURL as URL in enumerator {
-            let relPath = relativePath(from: url, to: fileURL)
-
-            // Skip the excluded prefix (e.g., _versions)
-            if relPath.hasPrefix(excludingPrefix) {
-                enumerator.skipDescendants()
-                continue
+        // Use recursive helper function (more reliable for CloudStorage than enumerator)
+        func scanRecursively(directory: URL, relativeTo baseURL: URL) {
+            guard let contents = try? fm.contentsOfDirectory(atPath: directory.path) else {
+                return
             }
 
-            // Skip .DS_Store and other system files at scan time
-            let fileName = fileURL.lastPathComponent
-            if fileName == ".DS_Store" || fileName == ".localized" {
-                continue
-            }
-
-            do {
-                let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
-                if values.isRegularFile == true {
-                    files.append(fileURL)
+            for itemName in contents {
+                // Skip system files
+                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" {
+                    continue
                 }
-            } catch {
-                // Log but don't fail on individual file errors
-                logService.log(.debug, category: .backup, message: "Could not read attributes for: \(relPath)")
+
+                let itemURL = directory.appendingPathComponent(itemName)
+                let relPath = relativePath(from: baseURL, to: itemURL)
+
+                // Skip excluded prefix
+                if relPath.hasPrefix(excludingPrefix) {
+                    continue
+                }
+
+                var itemIsDir: ObjCBool = false
+                if fm.fileExists(atPath: itemURL.path, isDirectory: &itemIsDir) {
+                    if itemIsDir.boolValue {
+                        directoriesScanned += 1
+                        scanRecursively(directory: itemURL, relativeTo: baseURL)
+                    } else {
+                        files.append(itemURL)
+                    }
+                }
             }
         }
 
-        logService.log(.debug, category: .backup, message: "Scanned \(url.path): found \(files.count) files")
+        scanRecursively(directory: url, relativeTo: url)
+
+        logService.log(.debug, category: .backup, message: "Scanned \(url.path): \(directoriesScanned) directories, \(files.count) files")
         return files
     }
 
