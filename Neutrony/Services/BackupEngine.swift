@@ -470,12 +470,17 @@ final class BackupEngine {
         var createdFolders = Set<String>()
 
         // Recursive scan that creates placeholders as it goes
+        // IMPORTANT: Only uses FileManager to check local file size - NO cloud API calls
         func scanAndCreatePlaceholders(directory: URL) {
             let dirPath = directory.path
+            let dirName = directory.lastPathComponent
 
             guard let contents = try? fm.contentsOfDirectory(atPath: dirPath) else {
+                logService.log(.warning, category: .backup, message: "Could not read directory: \(dirName)")
                 return
             }
+
+            logService.log(.debug, category: .backup, message: "Scanning: \(dirName) (\(contents.count) items)")
 
             for itemName in contents {
                 // Skip system files
@@ -507,14 +512,22 @@ final class BackupEngine {
                     // Recurse into subdirectory
                     scanAndCreatePlaceholders(directory: itemURL)
                 } else {
-                    // It's a file (or cloud-only placeholder)
-                    // Skip temp/system files
-                    if shouldSkipFile(itemURL.path, skipZeroByteFiles: false) {
-                        continue
+                    // It's a file - determine if local or cloud-only using ONLY local file size
+                    // NO cloud API calls here to avoid triggering downloads
+
+                    // Get local file size (this does NOT trigger downloads)
+                    let localFileSize: Int64
+                    if let attrs = try? fm.attributesOfItem(atPath: itemURL.path),
+                       let size = attrs[.size] as? Int64 {
+                        localFileSize = size
+                    } else {
+                        localFileSize = 0
                     }
 
-                    let isCloudOnly = syncVerifier.isCloudOnly(at: itemURL.path)
-                    let cloudSize = syncVerifier.getCloudFileSize(at: itemURL.path)
+                    // Cloud-only if: size is 0 AND it's in CloudStorage folder
+                    let isInCloudStorage = itemURL.path.contains("/Library/CloudStorage/")
+                    let isCloudOnly = (localFileSize == 0 && isInCloudStorage)
+
                     let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
                     let destParent = (destFilePath as NSString).deletingLastPathComponent
 
@@ -528,14 +541,15 @@ final class BackupEngine {
                     // Check if this file needs backup
                     let needsBackup: Bool
                     if let existingSize = destFileSizes[relPath] {
-                        if let size = cloudSize, size > 0 {
-                            needsBackup = (size != existingSize) || existingSize == 0
-                        } else if !isCloudOnly {
-                            needsBackup = (try? needsUpdate(source: itemURL.path, destination: destFilePath)) ?? true
+                        if isCloudOnly {
+                            // Cloud-only file: backup if dest is 0 (placeholder)
+                            needsBackup = existingSize == 0
                         } else {
-                            needsBackup = true
+                            // Local file: compare sizes
+                            needsBackup = localFileSize != existingSize
                         }
                     } else {
+                        // File doesn't exist in destination
                         needsBackup = true
                     }
 
@@ -552,7 +566,7 @@ final class BackupEngine {
 
                     // Categorize for later phases
                     if isCloudOnly {
-                        cloudOnlyFilesToBackup.append((itemURL, relPath, cloudSize))
+                        cloudOnlyFilesToBackup.append((itemURL, relPath, nil))
                     } else {
                         localFilesToBackup.append((itemURL, relPath))
                     }
