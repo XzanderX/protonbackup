@@ -548,25 +548,33 @@ final class BackupEngine {
         var completed = 0
 
         // ============================================
-        // PHASE 0: Create complete folder structure (NO DOWNLOADS)
+        // PHASE 0: Create complete folder structure with ALL files as zero-byte placeholders
+        // This lets the user see the full structure immediately before any copying starts
         // ============================================
         logService.log(.info, category: .backup,
-                       message: "Phase 0: Creating folder structure (no downloads yet)...")
+                       message: "Phase 0: Creating complete folder structure with placeholders...")
 
-        // Create folders for all files that need backup
         var foldersCreated = Set<String>()
 
-        // Create folders for local files
+        // Create folders and zero-byte placeholders for LOCAL files
         for (_, relPath) in localFilesToBackup {
             let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
             let destParent = (destPath as NSString).deletingLastPathComponent
+
+            // Create parent directory
             if !foldersCreated.contains(destParent) {
                 try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
                 foldersCreated.insert(destParent)
             }
+
+            // Create zero-byte placeholder if file doesn't exist
+            if !fm.fileExists(atPath: destPath) {
+                fm.createFile(atPath: destPath, contents: nil, attributes: nil)
+                placeholdersCreated += 1
+            }
         }
 
-        // Create folders and placeholders for cloud-only files
+        // Create folders and zero-byte placeholders for CLOUD-ONLY files
         for (_, relPath, _) in cloudOnlyFilesToBackup {
             let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
             let destParent = (destPath as NSString).deletingLastPathComponent
@@ -585,7 +593,7 @@ final class BackupEngine {
         }
 
         logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated.count) folders, \(placeholdersCreated) placeholders created")
+                       message: "Phase 0 complete: \(foldersCreated.count) folders, \(placeholdersCreated) placeholders for ALL files")
 
         // ============================================
         // PHASE 1: Backup LOCAL files only (no downloads, just copy already-downloaded files)
