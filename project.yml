@@ -1,6 +1,6 @@
-name: ProtonBackup
+name: Neutrony
 options:
-  bundleIdPrefix: com.protonbackup
+  bundleIdPrefix: com.neutrony
   deploymentTarget:
     macOS: "13.0"
   xcodeVersion: "15.0"
@@ -12,38 +12,38 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 targets:
-  ProtonBackup:
+  Neutrony:
     type: application
     platform: macOS
     sources:
-      - ProtonBackup
+      - Neutrony
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.protonbackup.app
-        PRODUCT_NAME: Proton Backup
-        INFOPLIST_FILE: ProtonBackup/Info.plist
-        CODE_SIGN_ENTITLEMENTS: ProtonBackup/ProtonBackup.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.neutrony.app
+        PRODUCT_NAME: Neutrony
+        INFOPLIST_FILE: Neutrony/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Neutrony/Neutrony.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         COMBINE_HIDPI_IMAGES: YES
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/../Frameworks"
     info:
-      path: ProtonBackup/Info.plist
+      path: Neutrony/Info.plist
     entitlements:
-      path: ProtonBackup/ProtonBackup.entitlements
+      path: Neutrony/Neutrony.entitlements
     postBuildScripts:
       - name: Bundle rclone
         script: |
           "${PROJECT_DIR}/scripts/bundle-rclone.sh"
         basedOnDependencyAnalysis: false
 
-  ProtonBackupTests:
+  NeutronyTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - Tests/ProtonBackupTests
+      - Tests/NeutronyTests
     dependencies:
-      - target: ProtonBackup
+      - target: Neutrony
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.protonbackup.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.neutrony.tests

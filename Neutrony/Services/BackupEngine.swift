@@ -71,7 +71,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
+        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
         logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
@@ -260,7 +260,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
+        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
         logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
@@ -444,7 +444,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
+        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
         // Scan source - this includes cloud-only files (they appear as placeholders)
@@ -852,7 +852,7 @@ final class BackupEngine {
         logService.log(.info, category: .backup, message: "Starting hybrid backup to: \(destinationPath)")
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("ProtonBackup")
+        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
         // Get cloud file list from rclone (source of truth)
@@ -1027,7 +1027,7 @@ final class BackupEngine {
         let fm = FileManager.default
 
         // Create a temporary file for download
-        let tempDir = fm.temporaryDirectory.appendingPathComponent("ProtonBackup")
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("Neutrony")
         try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let tempPath = tempDir.appendingPathComponent(UUID().uuidString + "_" + cloudFile.name).path
 

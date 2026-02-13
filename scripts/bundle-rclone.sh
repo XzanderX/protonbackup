@@ -23,7 +23,7 @@ if [ -n "$BUILT_PRODUCTS_DIR" ] && [ -n "$UNLOCALIZED_RESOURCES_FOLDER_PATH" ]; 
     DEST_DIR="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
 else
     # Manual execution - use current directory
-    DEST_DIR="./build/ProtonBackup.app/Contents/Resources"
+    DEST_DIR="./build/Neutrony.app/Contents/Resources"
 fi
 
 # Create destination directory if needed

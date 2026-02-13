@@ -8,7 +8,7 @@ enum DiagnosticsExporter {
     @discardableResult
     static func export(to destinationURL: URL? = nil) throws -> URL {
         let fm = FileManager.default
-        let tempDir = fm.temporaryDirectory.appendingPathComponent("ProtonBackup-diagnostics-\(UUID().uuidString)")
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("Neutrony-diagnostics-\(UUID().uuidString)")
         try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         defer {
@@ -41,7 +41,7 @@ enum DiagnosticsExporter {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
-        let zipName = "ProtonBackup-diagnostics-\(timestamp).zip"
+        let zipName = "Neutrony-diagnostics-\(timestamp).zip"
 
         let zipURL: URL
         if let dest = destinationURL {

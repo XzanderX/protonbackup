@@ -2,31 +2,31 @@
 import PackageDescription
 
 let package = Package(
-    name: "ProtonBackup",
+    name: "Neutrony",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "ProtonBackup", targets: ["ProtonBackup"])
+        .executable(name: "Neutrony", targets: ["Neutrony"])
     ],
     dependencies: [],
     targets: [
         .executableTarget(
-            name: "ProtonBackup",
+            name: "Neutrony",
             dependencies: [],
-            path: "ProtonBackup",
+            path: "Neutrony",
             exclude: [
                 "Info.plist",
-                "ProtonBackup.entitlements"
+                "Neutrony.entitlements"
             ],
             resources: [
                 .process("Assets.xcassets")
             ]
         ),
         .testTarget(
-            name: "ProtonBackupTests",
-            dependencies: ["ProtonBackup"],
-            path: "Tests/ProtonBackupTests"
+            name: "NeutronyTests",
+            dependencies: ["Neutrony"],
+            path: "Tests/NeutronyTests"
         )
     ]
 )

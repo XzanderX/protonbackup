@@ -1,5 +1,5 @@
 import XCTest
-@testable import ProtonBackup
+@testable import Neutrony
 
 final class BackupConfigurationTests: XCTestCase {
 
@@ -17,9 +17,9 @@ final class BackupConfigurationTests: XCTestCase {
         XCTAssertFalse(config.setupCompleted)
     }
 
-    func testDefaultMirrorPathContainsProtonBackup() {
+    func testDefaultMirrorPathContainsNeutrony() {
         let path = BackupConfiguration.defaultMirrorPath
-        XCTAssertTrue(path.contains("ProtonBackup"))
+        XCTAssertTrue(path.contains("Neutrony"))
         XCTAssertTrue(path.contains("Mirror"))
     }
 

@@ -1,5 +1,5 @@
 import XCTest
-@testable import ProtonBackup
+@testable import Neutrony
 
 final class DiskSpaceUtilityTests: XCTestCase {
 
@@ -29,7 +29,7 @@ final class DiskSpaceUtilityTests: XCTestCase {
     }
 
     func testDirectorySizeForEmptyDir() throws {
-        let tempDir = NSTemporaryDirectory() + "ProtonBackupTest-\(UUID().uuidString)"
+        let tempDir = NSTemporaryDirectory() + "NeutronyTest-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: tempDir) }
 
@@ -38,7 +38,7 @@ final class DiskSpaceUtilityTests: XCTestCase {
     }
 
     func testDirectorySizeWithFiles() throws {
-        let tempDir = NSTemporaryDirectory() + "ProtonBackupTest-\(UUID().uuidString)"
+        let tempDir = NSTemporaryDirectory() + "NeutronyTest-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: tempDir) }
 

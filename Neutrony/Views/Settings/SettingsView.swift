@@ -369,7 +369,7 @@ struct AdvancedSettingsView: View {
         Task {
             do {
                 let panel = NSSavePanel()
-                panel.nameFieldStringValue = "ProtonBackup-diagnostics.zip"
+                panel.nameFieldStringValue = "Neutrony-diagnostics.zip"
                 panel.allowedContentTypes = [.zip]
 
                 let response = await panel.beginSheetModal(for: NSApp.keyWindow ?? NSApp.mainWindow ?? NSWindow())

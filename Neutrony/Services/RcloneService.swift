@@ -40,7 +40,7 @@ final class RcloneService: @unchecked Sendable {
     /// Directory for rclone configuration
     private var configDir: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("ProtonBackup/rclone", isDirectory: true)
+        return appSupport.appendingPathComponent("Neutrony/rclone", isDirectory: true)
     }
 
     /// Path to rclone config file

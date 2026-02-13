@@ -1,7 +1,7 @@
 import Foundation
 
 /// Persisted configuration for the backup app.
-/// Stored as JSON in Application Support/ProtonBackup/config.json.
+/// Stored as JSON in Application Support/Neutrony/config.json.
 struct BackupConfiguration: Codable, Equatable {
 
     // MARK: - Source (Proton Drive folder)
@@ -19,7 +19,7 @@ struct BackupConfiguration: Codable, Equatable {
 
     // MARK: - Local mirror
 
-    /// Path to the local mirror folder. Defaults to Application Support/ProtonBackup/Mirror.
+    /// Path to the local mirror folder. Defaults to Application Support/Neutrony/Mirror.
     var localMirrorPath: String
 
     // MARK: - Polling
@@ -114,7 +114,7 @@ struct BackupConfiguration: Codable, Equatable {
             in: .userDomainMask
         ).first!
         return appSupport
-            .appendingPathComponent("ProtonBackup", isDirectory: true)
+            .appendingPathComponent("Neutrony", isDirectory: true)
             .appendingPathComponent("Mirror", isDirectory: true)
             .path
     }
@@ -126,7 +126,7 @@ struct BackupConfiguration: Codable, Equatable {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
-        let dir = appSupport.appendingPathComponent("ProtonBackup", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("Neutrony", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("config.json")
     }

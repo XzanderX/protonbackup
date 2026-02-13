@@ -1,5 +1,5 @@
 import XCTest
-@testable import ProtonBackup
+@testable import Neutrony
 
 final class SyncStateTests: XCTestCase {
 

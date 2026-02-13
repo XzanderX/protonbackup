@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ProtonBackupApp: App {
+struct NeutronyApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState()

@@ -10,7 +10,7 @@ release:
 
 # Run the app (development)
 run:
-	swift run ProtonBackup
+	swift run Neutrony
 
 # Run tests
 test:
@@ -28,13 +28,13 @@ generate-xcodeproj:
 # Package as .app bundle
 package: release
 	@echo "Creating app bundle..."
-	@rm -rf build/ProtonBackup.app
-	@mkdir -p build/ProtonBackup.app/Contents/MacOS
-	@mkdir -p build/ProtonBackup.app/Contents/Resources
-	@cp .build/release/ProtonBackup build/ProtonBackup.app/Contents/MacOS/
-	@cp ProtonBackup/Info.plist build/ProtonBackup.app/Contents/
+	@rm -rf build/Neutrony.app
+	@mkdir -p build/Neutrony.app/Contents/MacOS
+	@mkdir -p build/Neutrony.app/Contents/Resources
+	@cp .build/release/Neutrony build/Neutrony.app/Contents/MacOS/
+	@cp Neutrony/Info.plist build/Neutrony.app/Contents/
 	@echo "Ad-hoc signing app bundle..."
-	@codesign --force --deep --sign - build/ProtonBackup.app
-	@echo "App bundle created at build/ProtonBackup.app"
-	@echo "To open: open build/ProtonBackup.app"
-	@echo "For distribution, re-sign with: codesign --deep --force --sign 'Developer ID Application: ...' build/ProtonBackup.app"
+	@codesign --force --deep --sign - build/Neutrony.app
+	@echo "App bundle created at build/Neutrony.app"
+	@echo "To open: open build/Neutrony.app"
+	@echo "For distribution, re-sign with: codesign --deep --force --sign 'Developer ID Application: ...' build/Neutrony.app"

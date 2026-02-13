@@ -52,7 +52,7 @@ struct MirrorIndex: Codable {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first!
-        let dir = appSupport.appendingPathComponent("ProtonBackup", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("Neutrony", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("mirror-index.json")
     }

@@ -14,7 +14,7 @@ final class LogService: ObservableObject {
     private let maxInMemoryEntries = 5000
 
     /// System logger for os_log integration.
-    private let osLogger = Logger(subsystem: "com.protonbackup.app", category: "backup")
+    private let osLogger = Logger(subsystem: "com.neutrony.app", category: "backup")
 
     /// Whether to also print to stderr (visible in Terminal via `make run`).
     /// Enabled when running outside an app bundle (i.e. via swift run / make run).
@@ -22,7 +22,7 @@ final class LogService: ObservableObject {
 
     /// File handle for the log file.
     private var logFileHandle: FileHandle?
-    private let logQueue = DispatchQueue(label: "com.protonbackup.log", qos: .utility)
+    private let logQueue = DispatchQueue(label: "com.neutrony.log", qos: .utility)
 
     private init() {
         // Detect if running from a terminal (not inside a .app bundle)
@@ -30,7 +30,7 @@ final class LogService: ObservableObject {
         openLogFile()
         loadRecentEntries()
         if printToTerminal {
-            fputs("[ProtonBackup] Log service started. Log file: \(Self.logFileURL.path)\n", stderr)
+            fputs("[Neutrony] Log service started. Log file: \(Self.logFileURL.path)\n", stderr)
         }
     }
 
@@ -56,7 +56,7 @@ final class LogService: ObservableObject {
 
         // Print to terminal (stderr) when running via `make run` or `swift run`
         if printToTerminal {
-            fputs("[ProtonBackup] \(entry.displayLine)\n", stderr)
+            fputs("[Neutrony] \(entry.displayLine)\n", stderr)
         }
 
         // Write to os_log
@@ -131,14 +131,14 @@ final class LogService: ObservableObject {
             in: .userDomainMask
         ).first!
         let dir = appSupport
-            .appendingPathComponent("ProtonBackup", isDirectory: true)
+            .appendingPathComponent("Neutrony", isDirectory: true)
             .appendingPathComponent("Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
     private static var logFileURL: URL {
-        logDirectory.appendingPathComponent("protonbackup.log")
+        logDirectory.appendingPathComponent("neutrony.log")
     }
 
     private func openLogFile() {
@@ -162,7 +162,7 @@ final class LogService: ObservableObject {
 
     private func rotateLogFile() {
         let url = Self.logFileURL
-        let archiveURL = Self.logDirectory.appendingPathComponent("protonbackup.log.1")
+        let archiveURL = Self.logDirectory.appendingPathComponent("neutrony.log.1")
         let fm = FileManager.default
 
         try? fm.removeItem(at: archiveURL)
