@@ -69,14 +69,21 @@ final class WindowManager {
     }
 
     func showSettings() {
-        // Use the native macOS settings window mechanism.
-        // NSApp.sendAction for showSettingsWindow works on macOS 13+.
-        NSApp.activate(ignoringOtherApps: true)
-        if #available(macOS 14.0, *) {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        } else {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
+        // For menu bar apps, the native Settings scene can be unreliable.
+        // Create our own settings window using NSHostingView for reliability.
+        showWindow(
+            id: "settings",
+            title: "Proton Backup Settings",
+            size: NSSize(width: 520, height: 620),
+            styleMask: [.titled, .closable],
+            content: {
+                guard let appState else { return AnyView(EmptyView()) }
+                return AnyView(
+                    SettingsView()
+                        .environmentObject(appState)
+                )
+            }
+        )
     }
 
     func closeWindow(id: String) {

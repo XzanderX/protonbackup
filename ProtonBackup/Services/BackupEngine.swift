@@ -520,68 +520,75 @@ final class BackupEngine {
             )
         }
 
-        let cloudOnlyCount = filesToBackup.filter { $0.isCloudOnly }.count
+        // Separate local and cloud-only files - process local files FIRST
+        let localFiles = filesToBackup.filter { !$0.isCloudOnly }
+        let cloudOnlyFiles = filesToBackup.filter { $0.isCloudOnly }
+
         logService.log(.info, category: .backup,
-                       message: "\(filesToBackup.count) files to backup (\(cloudOnlyCount) need download), \(filesToDelete.count) to delete")
+                       message: "\(filesToBackup.count) files to backup (\(localFiles.count) local, \(cloudOnlyFiles.count) need download), \(filesToDelete.count) to delete")
 
-        // Process folder by folder
+        // Process local files first, then cloud-only files
         var completed = 0
-        let sortedFolders = filesByFolder.keys.sorted()
+        let allFilesOrdered = localFiles + cloudOnlyFiles
 
-        for folder in sortedFolders {
-            guard let files = filesByFolder[folder] else { continue }
+        // Log the processing order
+        if !localFiles.isEmpty {
+            logService.log(.info, category: .backup, message: "Phase 1: Backing up \(localFiles.count) local files...")
+        }
 
-            logService.log(.debug, category: .backup, message: "Processing folder: \(folder.isEmpty ? "(root)" : folder)")
-
-            for (fileURL, relPath, isCloudOnly) in files {
-                // Check for pause
-                while pauseChecker?() == true {
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                }
-
-                let currentProgress = BackupProgress(
-                    totalFiles: totalWork,
-                    completedFiles: completed,
-                    currentFileName: isCloudOnly ? "⬇ \(relPath)" : relPath
-                )
-                progressHandler(currentProgress)
-
-                do {
-                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-
-                    if isCloudOnly {
-                        // Download the file first
-                        logService.log(.debug, category: .backup, message: "Downloading cloud-only file: \(relPath)")
-                        let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
-
-                        if !downloaded {
-                            errors.append("Failed to download: \(relPath)")
-                            logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
-                            completed += 1
-                            continue
-                        }
-                        filesDownloaded += 1
-                    }
-
-                    // Copy the file
-                    try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
-                    filesUpdated += 1
-
-                    // Offload if requested (only for files we downloaded)
-                    if offloadAfterBackup && isCloudOnly {
-                        if syncVerifier.evictFile(at: fileURL.path) {
-                            filesOffloaded += 1
-                        }
-                    }
-
-                } catch {
-                    let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
-                    errors.append(desc)
-                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
-                }
-
-                completed += 1
+        for (fileURL, relPath, isCloudOnly) in allFilesOrdered {
+            // Log when switching to cloud-only phase
+            if isCloudOnly && completed == localFiles.count && !cloudOnlyFiles.isEmpty {
+                logService.log(.info, category: .backup, message: "Phase 2: Downloading and backing up \(cloudOnlyFiles.count) cloud-only files...")
             }
+
+            // Check for pause
+            while pauseChecker?() == true {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            }
+
+            let currentProgress = BackupProgress(
+                totalFiles: totalWork,
+                completedFiles: completed,
+                currentFileName: isCloudOnly ? "⬇ \(relPath)" : relPath
+            )
+            progressHandler(currentProgress)
+
+            do {
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+
+                if isCloudOnly {
+                    // Download the file first
+                    logService.log(.debug, category: .backup, message: "Downloading cloud-only file: \(relPath)")
+                    let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
+
+                    if !downloaded {
+                        errors.append("Failed to download: \(relPath)")
+                        logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
+                        completed += 1
+                        continue
+                    }
+                    filesDownloaded += 1
+                }
+
+                // Copy the file
+                try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
+                filesUpdated += 1
+
+                // Offload if requested (only for files we downloaded)
+                if offloadAfterBackup && isCloudOnly {
+                    if syncVerifier.evictFile(at: fileURL.path) {
+                        filesOffloaded += 1
+                    }
+                }
+
+            } catch {
+                let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
+                errors.append(desc)
+                logService.log(.error, category: .backup, message: desc, filePath: relPath)
+            }
+
+            completed += 1
         }
 
         // Handle deletions

@@ -425,8 +425,10 @@ final class AppState: ObservableObject {
                         self.notificationService.notifyDestinationConnected(volumeName: volumeInfo.name)
                     }
 
-                    // If there's a pending backup, run it
-                    if self.syncState.pendingBackup || self.backupState == .idle {
+                    // Auto-start backup when drive connects (if setup is complete and not already running)
+                    if self.config.setupCompleted && !self.syncState.isLocked {
+                        self.logService.log(.info, category: .driveMonitor,
+                                            message: "Auto-starting backup on drive connect...")
                         self.runNow()
                     }
                 }
