@@ -508,9 +508,48 @@ final class BackupEngine {
                         try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
                         createdFolders.insert(destDirPath)
                         foldersCreated += 1
+
+                        // Log progress every 10 folders
+                        if foldersCreated % 10 == 0 {
+                            logService.log(.info, category: .backup, message: "Created \(foldersCreated) folders so far...")
+                        }
                     }
                     // Recurse into subdirectory
                     scanAndCreatePlaceholders(directory: itemURL)
+                } else if !exists {
+                    // Item listed but doesn't exist locally - could be cloud-only directory or file
+                    // Try to list contents to see if it's a directory
+                    if let _ = try? fm.contentsOfDirectory(atPath: itemURL.path) {
+                        // It's a cloud-only directory - create and recurse
+                        let destDirPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                        if !createdFolders.contains(destDirPath) {
+                            try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
+                            createdFolders.insert(destDirPath)
+                            foldersCreated += 1
+                        }
+                        scanAndCreatePlaceholders(directory: itemURL)
+                    } else {
+                        // It's a cloud-only file
+                        let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
+                        let destParent = (destFilePath as NSString).deletingLastPathComponent
+
+                        if !createdFolders.contains(destParent) {
+                            try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+                            createdFolders.insert(destParent)
+                            foldersCreated += 1
+                        }
+
+                        // Check if needs backup
+                        if destFileSizes[relPath] == nil || destFileSizes[relPath] == 0 {
+                            if !fm.fileExists(atPath: destFilePath) {
+                                fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
+                                placeholdersCreated += 1
+                            }
+                            cloudOnlyFilesToBackup.append((itemURL, relPath, nil))
+                        } else {
+                            filesSkipped += 1
+                        }
+                    }
                 } else {
                     // It's a file - determine if local or cloud-only using ONLY local file size
                     // NO cloud API calls here to avoid triggering downloads
@@ -555,6 +594,10 @@ final class BackupEngine {
 
                     if !needsBackup {
                         filesSkipped += 1
+                        // Log progress every 100 skipped files
+                        if filesSkipped % 100 == 0 {
+                            logService.log(.debug, category: .backup, message: "Skipped \(filesSkipped) unchanged files so far...")
+                        }
                         continue
                     }
 
@@ -562,6 +605,11 @@ final class BackupEngine {
                     if !fm.fileExists(atPath: destFilePath) {
                         fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
                         placeholdersCreated += 1
+
+                        // Log progress every 50 files
+                        if placeholdersCreated % 50 == 0 {
+                            logService.log(.info, category: .backup, message: "Created \(placeholdersCreated) placeholders so far...")
+                        }
                     }
 
                     // Categorize for later phases
