@@ -406,12 +406,12 @@ final class BackupEngine {
     }
 
     /// Perform an on-demand backup that respects the user's Proton Drive sync settings.
-    /// This smart backup:
-    /// 1. Only downloads files that need to be backed up (changed or new)
-    /// 2. Processes folder by folder to minimize disk usage
-    /// 3. Optionally offloads files after backup to free up local space
+    /// This smart backup uses a three-phase approach:
+    /// 1. Phase 0: Create full folder structure with zero-byte placeholders for cloud-only files
+    /// 2. Phase 1: Backup all local files (already downloaded) - PRIORITY
+    /// 3. Phase 2: Download cloud-only files and replace placeholders
     ///
-    /// This is ideal for users who keep only some folders downloaded locally.
+    /// This ensures the user immediately sees the complete structure, with files filled in progressively.
     func performOnDemandBackup(
         sourcePath: String,
         destinationPath: String,
@@ -427,6 +427,7 @@ final class BackupEngine {
         var filesSkipped = 0
         var filesDownloaded = 0
         var filesOffloaded = 0
+        var placeholdersCreated = 0
         var errors: [String] = []
 
         let fm = FileManager.default
@@ -456,15 +457,20 @@ final class BackupEngine {
         let destURL = URL(fileURLWithPath: backupRoot)
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
-        // Build destination lookup by relative path
-        var destFileLookup: [String: URL] = [:]
+        // Build destination lookup by relative path with sizes
+        var destFileSizes: [String: Int64] = [:]
         for destFile in destFiles {
             let relPath = relativePath(from: destURL, to: destFile)
-            destFileLookup[relPath] = destFile
+            if let attrs = try? fm.attributesOfItem(atPath: destFile.path),
+               let size = attrs[.size] as? Int64 {
+                destFileSizes[relPath] = size
+            }
         }
 
-        // Group files by folder for batch processing
-        var filesByFolder: [String: [(url: URL, relPath: String, isCloudOnly: Bool)]] = [:]
+        // Categorize files into local and cloud-only, checking what needs backup
+        var localFilesToBackup: [(url: URL, relPath: String)] = []
+        var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
+
         for fileURL in allSourceFiles {
             let relPath = relativePath(from: sourceURL, to: fileURL)
 
@@ -473,20 +479,26 @@ final class BackupEngine {
                 continue
             }
 
-            // Check if this file needs backup (compare with destination)
+            let isCloudOnly = syncVerifier.isCloudOnly(at: fileURL.path)
+            let cloudSize = syncVerifier.getCloudFileSize(at: fileURL.path)
             let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
-            let needsBackup: Bool
 
-            if !fm.fileExists(atPath: destFilePath) {
-                needsBackup = true
-            } else if let cloudSize = syncVerifier.getCloudFileSize(at: fileURL.path) {
-                // Compare with cloud file size
-                let destAttrs = try? fm.attributesOfItem(atPath: destFilePath)
-                let destSize = destAttrs?[.size] as? Int64 ?? -1
-                needsBackup = (cloudSize != destSize)
+            // Check if this file needs backup
+            let needsBackup: Bool
+            if let existingSize = destFileSizes[relPath] {
+                if let size = cloudSize {
+                    // Compare cloud size with destination size
+                    // If dest is 0 (placeholder), it needs backup
+                    needsBackup = (size != existingSize) || existingSize == 0
+                } else if !isCloudOnly {
+                    // Local file - compare normally
+                    needsBackup = (try? needsUpdate(source: fileURL.path, destination: destFilePath)) ?? true
+                } else {
+                    needsBackup = true
+                }
             } else {
-                // Fall back to local comparison if possible
-                needsBackup = (try? needsUpdate(source: fileURL.path, destination: destFilePath)) ?? true
+                // File doesn't exist in destination
+                needsBackup = true
             }
 
             if !needsBackup {
@@ -494,23 +506,19 @@ final class BackupEngine {
                 continue
             }
 
-            // Check if file is cloud-only
-            let isCloudOnly = syncVerifier.isCloudOnly(at: fileURL.path)
-
-            // Group by parent folder
-            let folder = (relPath as NSString).deletingLastPathComponent
-            if filesByFolder[folder] == nil {
-                filesByFolder[folder] = []
+            if isCloudOnly {
+                cloudOnlyFilesToBackup.append((fileURL, relPath, cloudSize))
+            } else {
+                localFilesToBackup.append((fileURL, relPath))
             }
-            filesByFolder[folder]?.append((fileURL, relPath, isCloudOnly))
         }
 
-        // Calculate total work
-        let filesToBackup = filesByFolder.values.flatMap { $0 }
+        // Calculate files to delete
         let sourceRelative = Set(allSourceFiles.map { relativePath(from: sourceURL, to: $0) })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
         let filesToDelete = destRelative.subtracting(sourceRelative)
-        let totalWork = filesToBackup.count + filesToDelete.count
+
+        let totalWork = localFilesToBackup.count + cloudOnlyFilesToBackup.count + filesToDelete.count
 
         if totalWork == 0 {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
@@ -520,107 +528,170 @@ final class BackupEngine {
             )
         }
 
-        // Separate local and cloud-only files - process local files FIRST
-        let localFiles = filesToBackup.filter { !$0.isCloudOnly }
-        let cloudOnlyFiles = filesToBackup.filter { $0.isCloudOnly }
-
         logService.log(.info, category: .backup,
-                       message: "\(filesToBackup.count) files to backup (\(localFiles.count) local, \(cloudOnlyFiles.count) need download), \(filesToDelete.count) to delete")
+                       message: "\(localFilesToBackup.count) local + \(cloudOnlyFilesToBackup.count) cloud-only files to backup, \(filesToDelete.count) to delete")
 
-        // Process local files first, then cloud-only files
         var completed = 0
-        let allFilesOrdered = localFiles + cloudOnlyFiles
 
-        // Log the processing order
-        if !localFiles.isEmpty {
-            logService.log(.info, category: .backup, message: "Phase 1: Backing up \(localFiles.count) local files...")
+        // ============================================
+        // PHASE 0: Create folder structure and placeholders for cloud-only files
+        // ============================================
+        if !cloudOnlyFilesToBackup.isEmpty {
+            logService.log(.info, category: .backup,
+                           message: "Phase 0: Creating folder structure and placeholders for \(cloudOnlyFilesToBackup.count) cloud-only files...")
+
+            for (_, relPath, _) in cloudOnlyFilesToBackup {
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destParent = (destPath as NSString).deletingLastPathComponent
+
+                // Create parent directory
+                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+
+                // Create zero-byte placeholder if file doesn't exist
+                if !fm.fileExists(atPath: destPath) {
+                    fm.createFile(atPath: destPath, contents: nil, attributes: nil)
+                    placeholdersCreated += 1
+                }
+            }
+
+            logService.log(.info, category: .backup,
+                           message: "Created \(placeholdersCreated) placeholder files")
         }
 
-        for (fileURL, relPath, isCloudOnly) in allFilesOrdered {
-            // Log when switching to cloud-only phase
-            if isCloudOnly && completed == localFiles.count && !cloudOnlyFiles.isEmpty {
-                logService.log(.info, category: .backup, message: "Phase 2: Downloading and backing up \(cloudOnlyFiles.count) cloud-only files...")
+        // ============================================
+        // PHASE 1: Backup all LOCAL files first (priority)
+        // ============================================
+        if !localFilesToBackup.isEmpty {
+            logService.log(.info, category: .backup,
+                           message: "Phase 1: Backing up \(localFilesToBackup.count) local files...")
+
+            for (fileURL, relPath) in localFilesToBackup {
+                // Check for pause
+                while pauseChecker?() == true {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
+
+                let currentProgress = BackupProgress(
+                    totalFiles: totalWork,
+                    completedFiles: completed,
+                    currentFileName: relPath
+                )
+                progressHandler(currentProgress)
+
+                do {
+                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
+                    filesUpdated += 1
+                } catch {
+                    let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
+                    errors.append(desc)
+                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                }
+
+                completed += 1
             }
 
-            // Check for pause
-            while pauseChecker?() == true {
-                try await Task.sleep(nanoseconds: 500_000_000)
-            }
+            logService.log(.info, category: .backup,
+                           message: "Phase 1 complete: \(filesUpdated) local files backed up")
+        }
 
-            let currentProgress = BackupProgress(
-                totalFiles: totalWork,
-                completedFiles: completed,
-                currentFileName: isCloudOnly ? "⬇ \(relPath)" : relPath
-            )
-            progressHandler(currentProgress)
+        // ============================================
+        // PHASE 2: Download and backup cloud-only files
+        // ============================================
+        if !cloudOnlyFilesToBackup.isEmpty {
+            logService.log(.info, category: .backup,
+                           message: "Phase 2: Downloading and backing up \(cloudOnlyFilesToBackup.count) cloud-only files...")
 
-            do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+            for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
+                // Check for pause
+                while pauseChecker?() == true {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
 
-                if isCloudOnly {
-                    // Download the file first
-                    logService.log(.debug, category: .backup, message: "Downloading cloud-only file: \(relPath)")
+                let currentProgress = BackupProgress(
+                    totalFiles: totalWork,
+                    completedFiles: completed,
+                    currentFileName: "⬇ \(relPath)"
+                )
+                progressHandler(currentProgress)
+
+                do {
+                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+
+                    // Download the file
+                    logService.log(.debug, category: .backup, message: "Downloading: \(relPath)")
                     let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
 
                     if !downloaded {
-                        errors.append("Failed to download: \(relPath)")
+                        // Keep the placeholder, log warning
+                        errors.append("Download timeout: \(relPath) (placeholder kept)")
                         logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
                         completed += 1
                         continue
                     }
                     filesDownloaded += 1
-                }
 
-                // Copy the file
-                try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
-                filesUpdated += 1
+                    // Copy the downloaded file (replaces placeholder)
+                    try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: false, backupRoot: backupRoot)
+                    filesUpdated += 1
 
-                // Offload if requested (only for files we downloaded)
-                if offloadAfterBackup && isCloudOnly {
-                    if syncVerifier.evictFile(at: fileURL.path) {
-                        filesOffloaded += 1
+                    // Offload if requested
+                    if offloadAfterBackup {
+                        if syncVerifier.evictFile(at: fileURL.path) {
+                            filesOffloaded += 1
+                        }
                     }
+
+                } catch {
+                    let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
+                    errors.append(desc)
+                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
                 }
 
-            } catch {
-                let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
-                errors.append(desc)
-                logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                completed += 1
             }
 
-            completed += 1
+            logService.log(.info, category: .backup,
+                           message: "Phase 2 complete: \(filesDownloaded) files downloaded")
         }
 
-        // Handle deletions
-        for relPath in filesToDelete {
-            while pauseChecker?() == true {
-                try await Task.sleep(nanoseconds: 500_000_000)
-            }
+        // ============================================
+        // PHASE 3: Handle deletions
+        // ============================================
+        if !filesToDelete.isEmpty {
+            logService.log(.info, category: .backup,
+                           message: "Phase 3: Processing \(filesToDelete.count) deletions...")
 
-            let currentProgress = BackupProgress(
-                totalFiles: totalWork,
-                completedFiles: completed,
-                currentFileName: relPath
-            )
-            progressHandler(currentProgress)
+            for relPath in filesToDelete {
+                while pauseChecker?() == true {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
 
-            do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-                try handleDeletion(
-                    atPath: destPath,
-                    relativePath: relPath,
-                    policy: deletionPolicy,
-                    keepVersions: keepVersions,
-                    backupRoot: backupRoot
+                let currentProgress = BackupProgress(
+                    totalFiles: totalWork,
+                    completedFiles: completed,
+                    currentFileName: "🗑 \(relPath)"
                 )
-                filesDeleted += 1
-            } catch {
-                let desc = "Failed to handle deletion of \(relPath): \(error.localizedDescription)"
-                errors.append(desc)
-                logService.log(.error, category: .backup, message: desc, filePath: relPath)
-            }
+                progressHandler(currentProgress)
 
-            completed += 1
+                do {
+                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    try handleDeletion(
+                        atPath: destPath,
+                        relativePath: relPath,
+                        policy: deletionPolicy,
+                        keepVersions: keepVersions,
+                        backupRoot: backupRoot
+                    )
+                    filesDeleted += 1
+                } catch {
+                    let desc = "Failed to handle deletion of \(relPath): \(error.localizedDescription)"
+                    errors.append(desc)
+                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                }
+
+                completed += 1
+            }
         }
 
         // Clean up empty directories
@@ -638,7 +709,7 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "On-demand backup complete: \(summary.displayText)")
         logService.log(.info, category: .backup,
-                       message: "Downloaded: \(filesDownloaded), Offloaded: \(filesOffloaded)")
+                       message: "Stats: \(placeholdersCreated) placeholders, \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
 
         return summary
     }
