@@ -513,6 +513,20 @@ final class BackupEngine {
             }
         }
 
+        // Log categorization results
+        logService.log(.info, category: .backup,
+                       message: "Categorized \(allSourceFiles.count) files: \(localFilesToBackup.count) local, \(cloudOnlyFilesToBackup.count) cloud-only, \(filesSkipped) skipped")
+
+        // Log first few files for debugging
+        if !localFilesToBackup.isEmpty {
+            let sampleLocal = localFilesToBackup.prefix(3).map { $0.relPath }.joined(separator: ", ")
+            logService.log(.debug, category: .backup, message: "Sample local files: \(sampleLocal)")
+        }
+        if !cloudOnlyFilesToBackup.isEmpty {
+            let sampleCloud = cloudOnlyFilesToBackup.prefix(3).map { $0.relPath }.joined(separator: ", ")
+            logService.log(.debug, category: .backup, message: "Sample cloud-only files: \(sampleCloud)")
+        }
+
         // Calculate files to delete
         let sourceRelative = Set(allSourceFiles.map { relativePath(from: sourceURL, to: $0) })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
@@ -521,7 +535,7 @@ final class BackupEngine {
         let totalWork = localFilesToBackup.count + cloudOnlyFilesToBackup.count + filesToDelete.count
 
         if totalWork == 0 {
-            logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
+            logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed (all \(filesSkipped) files skipped)")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
                 errors: [], startTime: startTime, endTime: Date()
@@ -534,29 +548,44 @@ final class BackupEngine {
         var completed = 0
 
         // ============================================
-        // PHASE 0: Create folder structure and placeholders for cloud-only files
+        // PHASE 0: Create complete folder structure
         // ============================================
-        if !cloudOnlyFilesToBackup.isEmpty {
-            logService.log(.info, category: .backup,
-                           message: "Phase 0: Creating folder structure and placeholders for \(cloudOnlyFilesToBackup.count) cloud-only files...")
+        logService.log(.info, category: .backup,
+                       message: "Phase 0: Creating folder structure for \(localFilesToBackup.count + cloudOnlyFilesToBackup.count) files...")
 
-            for (_, relPath, _) in cloudOnlyFilesToBackup {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-                let destParent = (destPath as NSString).deletingLastPathComponent
+        // Create folders for all files that need backup
+        var foldersCreated = Set<String>()
 
-                // Create parent directory
+        // Create folders for local files
+        for (_, relPath) in localFilesToBackup {
+            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+            let destParent = (destPath as NSString).deletingLastPathComponent
+            if !foldersCreated.contains(destParent) {
                 try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+                foldersCreated.insert(destParent)
+            }
+        }
 
-                // Create zero-byte placeholder if file doesn't exist
-                if !fm.fileExists(atPath: destPath) {
-                    fm.createFile(atPath: destPath, contents: nil, attributes: nil)
-                    placeholdersCreated += 1
-                }
+        // Create folders and placeholders for cloud-only files
+        for (_, relPath, _) in cloudOnlyFilesToBackup {
+            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+            let destParent = (destPath as NSString).deletingLastPathComponent
+
+            // Create parent directory
+            if !foldersCreated.contains(destParent) {
+                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+                foldersCreated.insert(destParent)
             }
 
-            logService.log(.info, category: .backup,
-                           message: "Created \(placeholdersCreated) placeholder files")
+            // Create zero-byte placeholder if file doesn't exist
+            if !fm.fileExists(atPath: destPath) {
+                fm.createFile(atPath: destPath, contents: nil, attributes: nil)
+                placeholdersCreated += 1
+            }
         }
+
+        logService.log(.info, category: .backup,
+                       message: "Phase 0 complete: \(foldersCreated.count) folders, \(placeholdersCreated) placeholders created")
 
         // ============================================
         // PHASE 1: Backup all LOCAL files first (priority)

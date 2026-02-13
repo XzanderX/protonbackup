@@ -130,9 +130,13 @@ final class AppState: ObservableObject {
     /// Run a complete backup cycle now.
     func runNow() {
         guard !syncState.isLocked else {
-            logService.log(.warning, category: .app, message: "Backup already in progress")
+            logService.log(.warning, category: .app, message: "Backup already in progress, ignoring runNow request")
             return
         }
+
+        // Set lock immediately to prevent race conditions
+        syncState.isBacking = true
+        logService.log(.info, category: .app, message: "Starting backup cycle...")
 
         Task {
             await performFullBackupCycle()
@@ -252,8 +256,12 @@ final class AppState: ObservableObject {
     /// Backup from Proton Drive folder to external destination.
     /// Uses hybrid approach (rclone + local optimization) when rclone is configured.
     private func performBackup(to destPath: String) async {
-        guard !syncState.isBacking else { return }
+        guard !syncState.isBacking else {
+            logService.log(.warning, category: .backup, message: "Backup already in progress, skipping")
+            return
+        }
         syncState.isBacking = true
+        logService.log(.info, category: .backup, message: "Backup lock acquired, onDemandDownload=\(config.onDemandDownload)")
 
         backupState = .backing(progress: BackupProgress(
             totalFiles: 0, completedFiles: 0, currentFileName: "Starting backup…"
