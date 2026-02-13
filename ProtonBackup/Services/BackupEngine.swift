@@ -474,8 +474,8 @@ final class BackupEngine {
         for fileURL in allSourceFiles {
             let relPath = relativePath(from: sourceURL, to: fileURL)
 
-            // Skip temp/system files
-            if shouldSkipFile(fileURL.path) {
+            // Skip temp/system files (but not zero-byte files since cloud-only files appear as such)
+            if shouldSkipFile(fileURL.path, skipZeroByteFiles: false) {
                 continue
             }
 
@@ -718,6 +718,22 @@ final class BackupEngine {
     private func scanDirectoryIncludingCloudOnly(_ url: URL, excludingPrefix: String) throws -> [URL] {
         let fm = FileManager.default
         var files: [URL] = []
+        var directoriesScanned = 0
+        var itemsEnumerated = 0
+
+        logService.log(.debug, category: .backup, message: "Starting scan of: \(url.path)")
+
+        // Verify the directory exists
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+            logService.log(.error, category: .backup, message: "Source is not a directory: \(url.path)")
+            return []
+        }
+
+        // List immediate contents first for debugging
+        if let contents = try? fm.contentsOfDirectory(atPath: url.path) {
+            logService.log(.debug, category: .backup, message: "Top-level contents (\(contents.count) items): \(contents.prefix(10).joined(separator: ", "))\(contents.count > 10 ? "..." : "")")
+        }
 
         // Use options that include cloud-only files
         guard let enumerator = fm.enumerator(
@@ -726,7 +742,8 @@ final class BackupEngine {
                 .isRegularFileKey,
                 .isDirectoryKey,
                 .ubiquitousItemDownloadingStatusKey,
-                .isUbiquitousItemKey
+                .isUbiquitousItemKey,
+                .fileSizeKey
             ],
             options: [] // Don't skip anything
         ) else {
@@ -735,6 +752,7 @@ final class BackupEngine {
         }
 
         for case let fileURL as URL in enumerator {
+            itemsEnumerated += 1
             let relPath = relativePath(from: url, to: fileURL)
 
             // Skip the excluded prefix (e.g., _versions)
@@ -743,9 +761,12 @@ final class BackupEngine {
                 continue
             }
 
-            // Skip .DS_Store and system files
+            // Only skip specific system files, not all hidden files
             let fileName = fileURL.lastPathComponent
-            if fileName == ".DS_Store" || fileName == ".localized" || fileName.hasPrefix(".") {
+            if fileName == ".DS_Store" || fileName == ".localized" || fileName == ".Spotlight-V100" || fileName == ".Trashes" || fileName == ".fseventsd" {
+                if fileName == ".Spotlight-V100" || fileName == ".Trashes" || fileName == ".fseventsd" {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
 
@@ -753,24 +774,51 @@ final class BackupEngine {
                 let values = try fileURL.resourceValues(forKeys: [
                     .isRegularFileKey,
                     .isDirectoryKey,
-                    .ubiquitousItemDownloadingStatusKey
+                    .ubiquitousItemDownloadingStatusKey,
+                    .isUbiquitousItemKey
                 ])
 
-                // Include regular files AND cloud-only placeholders
-                if values.isRegularFile == true {
+                let isDirectory = values.isDirectory == true
+                let isRegularFile = values.isRegularFile == true
+                let isUbiquitous = values.isUbiquitousItem == true
+                let downloadStatus = values.ubiquitousItemDownloadingStatus
+
+                if isDirectory {
+                    directoriesScanned += 1
+                    continue
+                }
+
+                // Include regular files
+                if isRegularFile {
                     files.append(fileURL)
-                } else if values.isDirectory == false {
-                    // Could be a cloud-only placeholder - check download status
-                    if values.ubiquitousItemDownloadingStatus == .notDownloaded {
+                    continue
+                }
+
+                // For ubiquitous items that aren't regular files, they might be cloud-only
+                if isUbiquitous {
+                    // Cloud-only files that aren't downloaded yet
+                    if downloadStatus == .notDownloaded || downloadStatus == .current {
                         files.append(fileURL)
+                        continue
                     }
                 }
+
+                // Fallback: if it's not a directory, treat it as a file
+                if !isDirectory {
+                    files.append(fileURL)
+                }
+
             } catch {
-                logService.log(.debug, category: .backup, message: "Could not read attributes for: \(relPath)")
+                // If we can't read attributes, still try to include non-directories
+                var isItemDir: ObjCBool = false
+                if fm.fileExists(atPath: fileURL.path, isDirectory: &isItemDir) && !isItemDir.boolValue {
+                    files.append(fileURL)
+                    logService.log(.debug, category: .backup, message: "Added file with unreadable attributes: \(relPath)")
+                }
             }
         }
 
-        logService.log(.debug, category: .backup, message: "Scanned \(url.path): found \(files.count) files (including cloud-only)")
+        logService.log(.info, category: .backup, message: "Scan complete: \(itemsEnumerated) items enumerated, \(directoriesScanned) directories, \(files.count) files found")
         return files
     }
 
@@ -1148,7 +1196,11 @@ final class BackupEngine {
     // MARK: - Stability Helpers
 
     /// Check if a file should be skipped (temp files, system files, partial downloads).
-    private func shouldSkipFile(_ path: String) -> Bool {
+    /// - Parameters:
+    ///   - path: File path to check
+    ///   - skipZeroByteFiles: If true, skips zero-byte files (default). Set to false for on-demand backup
+    ///     since cloud-only files may appear as zero-byte placeholders.
+    private func shouldSkipFile(_ path: String, skipZeroByteFiles: Bool = true) -> Bool {
         let fileName = (path as NSString).lastPathComponent
 
         for pattern in skipPatterns {
@@ -1157,11 +1209,13 @@ final class BackupEngine {
             }
         }
 
-        // Skip zero-byte files (likely incomplete downloads)
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? Int64,
-           size == 0 {
-            return true
+        // Skip zero-byte files (likely incomplete downloads) - but not for on-demand backup
+        if skipZeroByteFiles {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int64,
+               size == 0 {
+                return true
+            }
         }
 
         return false

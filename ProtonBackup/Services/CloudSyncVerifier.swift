@@ -101,22 +101,28 @@ final class CloudSyncVerifier {
             at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [
                 .isRegularFileKey,
+                .isDirectoryKey,
                 .ubiquitousItemDownloadingStatusKey,
                 .ubiquitousItemIsDownloadingKey
             ],
-            options: [.skipsHiddenFiles]
+            options: []  // Don't skip hidden files
         ) else {
             return statusMap
         }
 
         for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                  values.isRegularFile == true else {
+            // Skip system files
+            let fileName = fileURL.lastPathComponent
+            if fileName == ".DS_Store" || fileName == ".localized" {
                 continue
             }
 
-            let status = getFileStatus(at: fileURL)
-            statusMap[fileURL.path] = status
+            // Check if it's a file (not directory)
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir) && !isDir.boolValue {
+                let status = getFileStatus(at: fileURL)
+                statusMap[fileURL.path] = status
+            }
         }
 
         return statusMap
@@ -241,26 +247,47 @@ final class CloudSyncVerifier {
     }
 
     /// Check if a file is cloud-only (not downloaded locally).
+    /// Returns true if the file exists but has no local content (cloud placeholder).
     func isCloudOnly(at path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
 
         do {
             let values = try url.resourceValues(forKeys: [
                 .ubiquitousItemDownloadingStatusKey,
-                .isUbiquitousItemKey
+                .isUbiquitousItemKey,
+                .fileSizeKey,
+                .totalFileSizeKey
             ])
 
-            // Must be a ubiquitous (cloud-managed) item
-            guard values.isUbiquitousItem == true else {
-                return false
+            // Check ubiquitous item status if available
+            if values.isUbiquitousItem == true {
+                if let downloadStatus = values.ubiquitousItemDownloadingStatus {
+                    return downloadStatus == .notDownloaded
+                }
             }
 
-            if let downloadStatus = values.ubiquitousItemDownloadingStatus {
-                return downloadStatus == .notDownloaded
+            // Fallback: Check if file appears to be a placeholder
+            // Cloud-only files often have 0 local size but non-zero total size
+            let localSize = values.fileSize ?? 0
+            let totalSize = values.totalFileSize ?? localSize
+
+            if localSize == 0 && totalSize > 0 {
+                return true
+            }
+
+            // Another indicator: file exists but has 0 size and is in CloudStorage path
+            if localSize == 0 && path.contains("/Library/CloudStorage/") {
+                return true
             }
 
             return false
         } catch {
+            // If we can't read attributes, check file size directly
+            if let attrs = try? fileManager.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int64,
+               size == 0 && path.contains("/Library/CloudStorage/") {
+                return true
+            }
             return false
         }
     }
