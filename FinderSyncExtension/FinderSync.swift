@@ -38,41 +38,41 @@ class FinderSync: FIFinderSync {
     private func registerBadgeImages() {
         let controller = FIFinderSyncController.default()
 
-        // Syncing badge - blue circular arrows
+        // Syncing badge - blue dot with white sync arrows
         if let syncingImage = createBadgeImage(
-            systemName: "arrow.triangle.2.circlepath",
+            systemName: "arrow.2.circlepath",
             color: .systemBlue
         ) {
             controller.setBadgeImage(syncingImage, label: "Syncing", forBadgeIdentifier: BadgeIdentifier.syncing.rawValue)
         }
 
-        // Downloading badge - blue down arrow
+        // Downloading badge - blue dot with white down arrow
         if let downloadingImage = createBadgeImage(
-            systemName: "arrow.down.circle.fill",
+            systemName: "arrow.down",
             color: .systemBlue
         ) {
             controller.setBadgeImage(downloadingImage, label: "Downloading", forBadgeIdentifier: BadgeIdentifier.downloading.rawValue)
         }
 
-        // Complete badge - green checkmark
+        // Complete badge - green dot with white checkmark
         if let completeImage = createBadgeImage(
-            systemName: "checkmark.circle.fill",
+            systemName: "checkmark",
             color: .systemGreen
         ) {
             controller.setBadgeImage(completeImage, label: "Backed Up", forBadgeIdentifier: BadgeIdentifier.complete.rawValue)
         }
 
-        // Error badge - red X
+        // Error badge - red dot with white X
         if let errorImage = createBadgeImage(
-            systemName: "xmark.circle.fill",
+            systemName: "xmark",
             color: .systemRed
         ) {
             controller.setBadgeImage(errorImage, label: "Error", forBadgeIdentifier: BadgeIdentifier.error.rawValue)
         }
 
-        // Pending badge - gray clock
+        // Pending badge - gray dot with white clock
         if let pendingImage = createBadgeImage(
-            systemName: "clock.fill",
+            systemName: "clock",
             color: .systemGray
         ) {
             controller.setBadgeImage(pendingImage, label: "Pending", forBadgeIdentifier: BadgeIdentifier.pending.rawValue)
@@ -82,21 +82,44 @@ class FinderSync: FIFinderSync {
     }
 
     private func createBadgeImage(systemName: String, color: NSColor) -> NSImage? {
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        guard let image = NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
+        let size = NSSize(width: 18, height: 18)
+        let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+
+        guard let symbolImage = NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
             .withSymbolConfiguration(config) else {
             return nil
         }
 
-        // Create a colored version
-        let coloredImage = NSImage(size: image.size, flipped: false) { rect in
-            color.set()
-            image.draw(in: rect)
+        let badgeImage = NSImage(size: size, flipped: false) { rect in
+            // Draw filled circle background
+            let circleRect = rect.insetBy(dx: 1, dy: 1)
+            let circlePath = NSBezierPath(ovalIn: circleRect)
+            color.setFill()
+            circlePath.fill()
+
+            // Create white-tinted version of symbol
+            let symbolSize = symbolImage.size
+            let symbolRect = NSRect(
+                x: (rect.width - symbolSize.width) / 2,
+                y: (rect.height - symbolSize.height) / 2,
+                width: symbolSize.width,
+                height: symbolSize.height
+            )
+
+            // Use template mode to draw in white
+            let templateImage = symbolImage.copy() as! NSImage
+            templateImage.isTemplate = true
+
+            NSGraphicsContext.saveGraphicsState()
+            NSColor.white.set()
+            templateImage.draw(in: symbolRect)
+            NSGraphicsContext.restoreGraphicsState()
+
             return true
         }
 
-        coloredImage.isTemplate = false
-        return coloredImage
+        badgeImage.isTemplate = false
+        return badgeImage
     }
 
     // MARK: - Directory Monitoring
