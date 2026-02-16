@@ -12,6 +12,7 @@ final class BackupEngine {
     private let versionManager: VersionManager
     private let rcloneService = RcloneService.shared
     private let syncVerifier = CloudSyncVerifier.shared
+    private let badgeService = BadgeService.shared
 
     /// Maximum retry attempts for transient errors
     private let maxRetryAttempts = 3
@@ -434,6 +435,10 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "Offload after backup: \(offloadAfterBackup)")
 
+        // Configure badge service for this backup
+        badgeService.configure(sourcePath: sourcePath, destinationPath: destinationPath)
+        badgeService.backupStarted(destinationPath: destinationPath)
+
         // Verify source exists
         guard fm.fileExists(atPath: sourcePath) else {
             logService.log(.error, category: .backup, message: "Source path does not exist: \(sourcePath)")
@@ -676,14 +681,19 @@ final class BackupEngine {
                 )
                 progressHandler(currentProgress)
 
+                // Mark file as syncing in Finder
+                badgeService.markFileSyncing(relativePath: relPath)
+
                 do {
                     let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
                     try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                     filesUpdated += 1
+                    badgeService.markFileComplete(relativePath: relPath)
                 } catch {
                     let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
                     errors.append(desc)
                     logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                    badgeService.markFileError(relativePath: relPath)
                 }
 
                 completed += 1
@@ -713,6 +723,9 @@ final class BackupEngine {
                 )
                 progressHandler(currentProgress)
 
+                // Mark file as downloading in Finder
+                badgeService.markFileDownloading(relativePath: relPath)
+
                 do {
                     let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
 
@@ -724,14 +737,19 @@ final class BackupEngine {
                         // Keep the placeholder, log warning
                         errors.append("Download timeout: \(relPath) (placeholder kept)")
                         logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
+                        badgeService.markFileError(relativePath: relPath)
                         completed += 1
                         continue
                     }
                     filesDownloaded += 1
 
+                    // Mark as syncing during copy
+                    badgeService.markFileSyncing(relativePath: relPath)
+
                     // Copy the downloaded file (replaces placeholder)
                     try copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: false, backupRoot: backupRoot)
                     filesUpdated += 1
+                    badgeService.markFileComplete(relativePath: relPath)
 
                     // Offload if requested
                     if offloadAfterBackup {
@@ -744,6 +762,7 @@ final class BackupEngine {
                     let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
                     errors.append(desc)
                     logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                    badgeService.markFileError(relativePath: relPath)
                 }
 
                 completed += 1
@@ -808,6 +827,9 @@ final class BackupEngine {
                        message: "On-demand backup complete: \(summary.displayText)")
         logService.log(.info, category: .backup,
                        message: "Stats: \(placeholdersCreated) placeholders, \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
+
+        // Mark backup as complete in Finder
+        badgeService.backupCompleted(destinationPath: destinationPath)
 
         return summary
     }

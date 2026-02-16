@@ -19,6 +19,7 @@ let package = Package(
                 "Info.plist",
                 "Neutrony.entitlements"
             ],
+            sources: ["."],
             resources: [
                 .process("Assets.xcassets")
             ]
