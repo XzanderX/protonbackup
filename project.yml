@@ -45,7 +45,7 @@ targets:
         basedOnDependencyAnalysis: false
 
   FinderSyncExtension:
-    type: finder-sync-extension
+    type: app-extension
     platform: macOS
     sources:
       - FinderSyncExtension
