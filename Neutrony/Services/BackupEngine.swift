@@ -469,15 +469,19 @@ final class BackupEngine {
         var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
         var createdFolders = Set<String>()
 
-        // Recursive scan that creates placeholders as it goes
+        // Breadth-first scan that creates placeholders as it goes
         // IMPORTANT: Only uses FileManager to check local file size - NO cloud API calls
-        func scanAndCreatePlaceholders(directory: URL) {
+        // Uses a queue for breadth-first traversal so all top-level folders are processed first
+        var directoryQueue: [URL] = [sourceURL]
+
+        while !directoryQueue.isEmpty {
+            let directory = directoryQueue.removeFirst()
             let dirPath = directory.path
             let dirName = directory.lastPathComponent
 
             guard let contents = try? fm.contentsOfDirectory(atPath: dirPath) else {
                 logService.log(.warning, category: .backup, message: "Could not read directory: \(dirName)")
-                return
+                continue
             }
 
             logService.log(.debug, category: .backup, message: "Scanning: \(dirName) (\(contents.count) items)")
@@ -515,20 +519,20 @@ final class BackupEngine {
                             logService.log(.info, category: .backup, message: "Created \(foldersCreated) folders so far...")
                         }
                     }
-                    // Recurse into subdirectory
-                    scanAndCreatePlaceholders(directory: itemURL)
+                    // Queue subdirectory for later processing (breadth-first)
+                    directoryQueue.append(itemURL)
                 } else if !exists {
                     // Item listed but doesn't exist locally - could be cloud-only directory or file
                     // Try to list contents to see if it's a directory
                     if let _ = try? fm.contentsOfDirectory(atPath: itemURL.path) {
-                        // It's a cloud-only directory - create and recurse
+                        // It's a cloud-only directory - create and queue for processing
                         let destDirPath = (backupRoot as NSString).appendingPathComponent(relPath)
                         if !createdFolders.contains(destDirPath) {
                             try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
                             createdFolders.insert(destDirPath)
                             foldersCreated += 1
                         }
-                        scanAndCreatePlaceholders(directory: itemURL)
+                        directoryQueue.append(itemURL)
                     } else {
                         // It's a cloud-only file
                         let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
@@ -630,9 +634,6 @@ final class BackupEngine {
                 }
             }
         }
-
-        // Start the scan (creates placeholders in real-time)
-        scanAndCreatePlaceholders(directory: sourceURL)
 
         logService.log(.info, category: .backup,
                        message: "Phase 0 complete: \(foldersCreated) folders, \(placeholdersCreated) placeholders created")
