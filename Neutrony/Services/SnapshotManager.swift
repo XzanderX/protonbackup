@@ -108,18 +108,22 @@ final class SnapshotManager {
     }
 
     /// List APFS volume snapshots on the volume containing `backupRoot`.
+    /// Note: Returns all local snapshots on the volume, not just those created by this app.
     func listAPFSSnapshots(backupRoot: String) -> [String] {
         let volumeRoot = volumeMountPoint(for: backupRoot)
         let result = runProcess("/usr/bin/tmutil", arguments: ["listlocalsnapshots", volumeRoot])
 
         guard let output = result.output else { return [] }
 
-        // tmutil output format: "com.apple.TimeMachine.2026-02-16-143000.local" or
-        // "Snapshots for disk /:\ncom.apple.TimeMachine..." – we grab lines that look like snapshot names.
-        // Our snapshots use prefix "neutrony."
+        // tmutil output format varies:
+        // "Snapshots for disk /Volumes/Backup:"
+        // "com.apple.TimeMachine.2026-02-16-143000.local"
+        // We return all snapshot names (lines that look like snapshot identifiers)
         return output
             .components(separatedBy: .newlines)
-            .filter { $0.hasPrefix("neutrony.") }
+            .filter { $0.contains(".") && !$0.hasPrefix("Snapshots for") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// Calculate the total disk size of .history/ clones.
@@ -149,7 +153,6 @@ final class SnapshotManager {
 
     /// Purge clone captures older than the given number of days.
     func purgeOldClones(backupRoot: String, olderThanDays: Int) throws -> Int {
-        let historyPath = (backupRoot as NSString).appendingPathComponent(Self.historyFolder)
         let fm = FileManager.default
         let cutoffDate = Calendar.current.date(byAdding: .day, value: -olderThanDays, to: Date())!
 
@@ -157,8 +160,7 @@ final class SnapshotManager {
         var purgedCount = 0
 
         for capture in captures where capture.date < cutoffDate {
-            let folderPath = (historyPath as NSString).appendingPathComponent(capture.name)
-            try fm.removeItem(atPath: folderPath)
+            try fm.removeItem(atPath: capture.path)
             purgedCount += 1
             logService.log(.info, category: .history,
                            message: "Purged history capture: \(capture.name)")
@@ -167,25 +169,37 @@ final class SnapshotManager {
         return purgedCount
     }
 
-    /// Delete a specific APFS volume snapshot by name.
+    /// Delete a specific APFS volume snapshot by name or date.
+    /// - Parameter name: Full snapshot name (e.g., "com.apple.TimeMachine.2026-02-16-143000.local")
+    ///   or just the date portion (e.g., "2026-02-16-143000")
     func deleteAPFSSnapshot(name: String, backupRoot: String) -> Bool {
-        let volumeRoot = volumeMountPoint(for: backupRoot)
+        // tmutil deletelocalsnapshots expects just the date portion (YYYY-MM-DD-HHMMSS)
+        // Extract it from the full snapshot name if needed
+        var dateString = name
+        if name.hasPrefix("com.apple.TimeMachine.") {
+            // Extract: "com.apple.TimeMachine.2026-02-16-143000.local" → "2026-02-16-143000"
+            dateString = name
+                .replacingOccurrences(of: "com.apple.TimeMachine.", with: "")
+                .replacingOccurrences(of: ".local", with: "")
+        }
+
         let result = runProcess("/usr/bin/tmutil",
-                                arguments: ["deletelocalsnapshots", name.replacingOccurrences(of: "neutrony.", with: "")])
+                                arguments: ["deletelocalsnapshots", dateString])
         if result.exitCode != 0 {
             logService.log(.warning, category: .history,
                            message: "Failed to delete snapshot \(name): \(result.output ?? "unknown error")")
             return false
         }
+        logService.log(.info, category: .history, message: "Deleted snapshot: \(dateString)")
         return true
     }
 
     // MARK: - APFS Snapshot
 
     /// Create an APFS volume snapshot using `tmutil localsnapshot`.
+    /// Returns the actual snapshot name created by tmutil (e.g., "com.apple.TimeMachine.2026-02-16-143000.local").
     private func createAPFSSnapshot(backupRoot: String) throws -> String {
         let volumeRoot = volumeMountPoint(for: backupRoot)
-        let timestamp = Self.dateFormatter.string(from: Date())
 
         logService.log(.info, category: .history,
                        message: "Creating APFS snapshot on volume: \(volumeRoot)")
@@ -205,7 +219,20 @@ final class SnapshotManager {
             throw SnapshotError.snapshotFailed(errorMsg)
         }
 
-        let snapshotName = "neutrony.\(timestamp)"
+        // Parse the snapshot name from tmutil output.
+        // Output format: "Created local snapshot with date: 2026-02-16-143000"
+        var snapshotName = "snapshot"
+        if let output = result.output {
+            // Extract the date portion from the output
+            let datePattern = #"(\d{4}-\d{2}-\d{2}-\d{6})"#
+            if let regex = try? NSRegularExpression(pattern: datePattern),
+               let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+               let range = Range(match.range(at: 1), in: output) {
+                let dateString = String(output[range])
+                snapshotName = "com.apple.TimeMachine.\(dateString).local"
+            }
+        }
+
         logService.log(.info, category: .history,
                        message: "APFS snapshot created: \(snapshotName)")
         return snapshotName
