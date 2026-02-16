@@ -68,6 +68,11 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FinderSync
     entitlements:
       path: FinderSyncExtension/FinderSyncExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.neutrony.shared
+        com.apple.security.files.user-selected.read-only: true
 
   NeutronyTests:
     type: bundle.unit-test
