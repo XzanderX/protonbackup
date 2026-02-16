@@ -164,6 +164,9 @@ final class AppState: ObservableObject {
 
     /// Full backup cycle: sync from Proton (if needed), then copy to destination.
     private func performFullBackupCycle() async {
+        logService.log(.info, category: .app,
+                       message: "performFullBackupCycle: useRclone=\(config.useRclone), isDestConnected=\(isDestinationConnected), destPath=\(destinationPath ?? "nil")")
+
         // Phase 1: Sync from Proton to local mirror (only for rclone mode)
         // For local folder modes, Proton Drive app handles syncing
         if config.useRclone && config.rcloneConfigured {
@@ -184,11 +187,12 @@ final class AppState: ObservableObject {
             // For local folder modes, go directly to backup
             guard isDestinationConnected, let destPath = destinationPath else {
                 syncState.pendingBackup = true
-                logService.log(.info, category: .app,
-                               message: "Backup queued until destination connects.")
+                logService.log(.warning, category: .app,
+                               message: "Backup skipped: isDestConnected=\(isDestinationConnected), destPath=\(destinationPath ?? "nil")")
                 return
             }
 
+            logService.log(.info, category: .app, message: "Calling performBackup to: \(destPath)")
             await performBackup(to: destPath)
         }
     }
