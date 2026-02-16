@@ -56,10 +56,10 @@ struct RestoreHelpView: View {
                     number: 1,
                     title: "Finding Your Files",
                     content: """
-                    Your backup is stored on your external drive in a folder called **Neutrony**. \
+                    Your backup is stored directly on your external drive. \
                     The folder structure mirrors your Proton Drive exactly.
 
-                    **Backup location:** \(appState.config.destinationDisplayName ?? "Not configured") → Neutrony/
+                    **Backup location:** \(appState.config.destinationDisplayName ?? "Not configured")
 
                     Simply navigate to the file you need and copy it to where you want it.
                     """
@@ -74,7 +74,7 @@ struct RestoreHelpView: View {
 
                     **Structure:**
                     ```
-                    Neutrony/
+                    [Backup Drive]/
                     ├── _versions/
                     │   ├── 2025-01-15/
                     │   │   └── Documents/report.pdf
@@ -112,7 +112,7 @@ struct RestoreHelpView: View {
                     For a complete restore (e.g., after data loss):
 
                     1. Sign into Proton Drive on the web
-                    2. Upload the contents of your Neutrony folder
+                    2. Upload the contents of your backup drive
                     3. The app will detect the changes on the next sync
 
                     Your backup is a plain folder of files — no special tools needed to read it.
@@ -122,7 +122,7 @@ struct RestoreHelpView: View {
                 // Version info
                 if appState.config.keepVersions,
                    let destPath = appState.destinationPath {
-                    let backupRoot = (destPath as NSString).appendingPathComponent("Neutrony")
+                    let backupRoot = destPath
                     let dates = appState.versionManager.listVersionDates(backupRoot: backupRoot)
                     if !dates.isEmpty {
                         Divider()
@@ -149,7 +149,7 @@ struct RestoreHelpView: View {
 
     private func openBackupFolder() {
         guard let destPath = appState.destinationPath else { return }
-        let backupPath = (destPath as NSString).appendingPathComponent("Neutrony")
+        let backupPath = destPath
         NSWorkspace.shared.open(URL(fileURLWithPath: backupPath))
     }
 
@@ -160,7 +160,6 @@ struct RestoreHelpView: View {
     private func openVersionsFolder() {
         guard let destPath = appState.destinationPath else { return }
         let versionsPath = (destPath as NSString)
-            .appendingPathComponent("Neutrony")
             .appending("/_versions")
         NSWorkspace.shared.open(URL(fileURLWithPath: versionsPath))
     }

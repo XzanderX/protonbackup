@@ -71,7 +71,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
+        let backupRoot = destinationPath
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
         logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
@@ -260,7 +260,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
+        let backupRoot = destinationPath
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
         logService.log(.debug, category: .backup, message: "Backup root: \(backupRoot)")
 
@@ -441,7 +441,7 @@ final class BackupEngine {
         }
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
+        let backupRoot = destinationPath
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
         let sourceURL = URL(fileURLWithPath: sourcePath)
@@ -919,7 +919,7 @@ final class BackupEngine {
         logService.log(.info, category: .backup, message: "Starting hybrid backup to: \(destinationPath)")
 
         // Ensure destination directory exists
-        let backupRoot = (destinationPath as NSString).appendingPathComponent("Neutrony")
+        let backupRoot = destinationPath
         try fm.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
 
         // Get cloud file list from rclone (source of truth)
