@@ -486,11 +486,18 @@ final class BackupEngine {
             let directory = directoryQueue.removeFirst()
             directoriesScanned += 1
 
-            // Yield to prevent blocking - every 50 directories
+            // Yield and update progress every 50 directories
             if directoriesScanned % 50 == 0 {
                 await Task.yield()
                 logService.log(.debug, category: .backup,
                                message: "Scanned \(directoriesScanned) directories, found \(placeholdersToCreate.count) files...")
+                // Update UI during scan so it doesn't appear stuck
+                let scanProgress = BackupProgress(
+                    totalFiles: 0,
+                    completedFiles: 0,
+                    currentFileName: "Scanning: \(placeholdersToCreate.count) files found..."
+                )
+                progressHandler(scanProgress)
             }
 
             guard let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) else {

@@ -89,7 +89,12 @@ final class AppState: ObservableObject {
 
     /// Start all background operations after setup is complete.
     private func startOperations() {
-        backupState = .idle
+        // Don't reset state if backup is already in progress
+        if !syncState.isLocked {
+            backupState = .idle
+        } else {
+            logService.log(.debug, category: .app, message: "startOperations: backup in progress, preserving state")
+        }
 
         // Check destination availability
         checkDestinationAvailability()
