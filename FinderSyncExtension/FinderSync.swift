@@ -105,30 +105,15 @@ class FinderSync: FIFinderSync {
         let directories = badgeManager.getMonitoredDirectories()
 
         if directories.isEmpty {
-            // Default to common backup locations
-            var defaultDirs: Set<URL> = []
-
-            // Check for Proton Drive folder
-            let cloudStorage = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/CloudStorage")
-
-            if let contents = try? FileManager.default.contentsOfDirectory(
-                at: cloudStorage,
-                includingPropertiesForKeys: nil
-            ) {
-                for item in contents where item.lastPathComponent.hasPrefix("ProtonDrive-") {
-                    defaultDirs.insert(item)
-                }
-            }
-
-            // Add /Volumes for backup destinations
-            defaultDirs.insert(URL(fileURLWithPath: "/Volumes"))
-
+            // No directories configured yet - monitor /Volumes so we're ready
+            // when the main app sets a backup destination
+            let defaultDirs: Set<URL> = [URL(fileURLWithPath: "/Volumes")]
             FIFinderSyncController.default().directoryURLs = defaultDirs
-            NSLog("FinderSync: Monitoring default directories: \(defaultDirs)")
+            NSLog("FinderSync: Waiting for backup destination, monitoring /Volumes")
         } else {
+            // Monitor only the configured backup destination
             FIFinderSyncController.default().directoryURLs = Set(directories)
-            NSLog("FinderSync: Monitoring configured directories: \(directories)")
+            NSLog("FinderSync: Monitoring backup destination: \(directories.map { $0.path })")
         }
     }
 

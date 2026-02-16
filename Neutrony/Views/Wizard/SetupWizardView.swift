@@ -121,6 +121,9 @@ class WizardState: ObservableObject {
     @Published var initialBackupComplete = false
     @Published var initialBackupRunning = false
 
+    // Finder extension state
+    @Published var finderExtensionEnabled = false
+
     var canContinue: Bool {
         switch currentStep {
         case .welcome: return true

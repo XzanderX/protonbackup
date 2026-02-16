@@ -49,6 +49,9 @@ enum SettingsTab {
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
 
+    private let finderSyncHelper = FinderSyncHelper.shared
+    @State private var extensionEnabled = false
+
     var body: some View {
         Form {
             Section {
@@ -100,8 +103,62 @@ struct GeneralSettingsView: View {
             } header: {
                 Text("Status")
             }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Finder badges")
+                            .font(.body)
+                        Text("Show sync progress on files in Finder")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    if !finderSyncHelper.isExtensionAvailable() {
+                        Text("Not available")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else if extensionEnabled {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.statusGreen)
+                                .frame(width: 8, height: 8)
+                            Text("Enabled")
+                                .font(.caption)
+                                .foregroundColor(.statusGreen)
+                        }
+                    } else {
+                        Button("Enable") {
+                            _ = finderSyncHelper.requestEnableExtension()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+                if !extensionEnabled && finderSyncHelper.isExtensionAvailable() {
+                    Button("Check Extension Status") {
+                        checkExtensionStatus()
+                    }
+                    .font(.caption)
+                }
+            } header: {
+                Text("Finder Integration")
+            } footer: {
+                if !finderSyncHelper.isExtensionAvailable() {
+                    Text("Build with `make package` to include the Finder extension.")
+                }
+            }
         }
         .formStyle(.grouped)
+        .onAppear {
+            checkExtensionStatus()
+        }
+    }
+
+    private func checkExtensionStatus() {
+        extensionEnabled = finderSyncHelper.isExtensionEnabled()
     }
 }
 

@@ -20,21 +20,20 @@ final class BadgeService {
     // MARK: - Configuration
 
     /// Configure monitored directories for the FinderSync extension.
+    /// Only monitors the backup destination so users can see progress there.
     func configure(sourcePath: String?, destinationPath: String?) {
-        var directories: [URL] = []
+        activeSource = sourcePath
 
-        if let source = sourcePath {
-            directories.append(URL(fileURLWithPath: source))
-            activeSource = source
+        guard let dest = destinationPath else {
+            logService.log(.debug, category: .backup, message: "BadgeService: no destination configured")
+            return
         }
 
-        if let dest = destinationPath {
-            directories.append(URL(fileURLWithPath: dest))
-            activeDestination = dest
-        }
+        activeDestination = dest
 
-        badgeManager.setMonitoredDirectories(directories)
-        logService.log(.debug, category: .backup, message: "BadgeService configured: \(directories.count) directories")
+        // Only monitor the destination - that's where users want to see progress
+        badgeManager.setMonitoredDirectories([URL(fileURLWithPath: dest)])
+        logService.log(.debug, category: .backup, message: "BadgeService configured for: \(dest)")
     }
 
     // MARK: - Backup Lifecycle
