@@ -330,7 +330,7 @@ final class SnapshotManager {
     /// Find the mount point of the volume containing the given path.
     private func volumeMountPoint(for path: String) -> String {
         let url = URL(fileURLWithPath: path)
-        if let volumeURL = try? url.resourceValues(forKeys: [.volumeURLKey]).volumeURL {
+        if let volumeURL = (try? url.resourceValues(forKeys: [.volumeURLKey]))?.volume {
             return volumeURL.path
         }
         // Fallback: walk up until we find a mount point
@@ -339,7 +339,7 @@ final class SnapshotManager {
             var isVolume: ObjCBool = false
             if FileManager.default.fileExists(atPath: current.path, isDirectory: &isVolume) {
                 let values = try? current.resourceValues(forKeys: [.volumeURLKey])
-                if values?.volumeURL?.path == current.path {
+                if values?.volume?.path == current.path {
                     return current.path
                 }
             }
