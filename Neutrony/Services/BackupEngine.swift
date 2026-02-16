@@ -483,10 +483,11 @@ final class BackupEngine {
             logService.log(.debug, category: .backup, message: "Scanning: \(dirName) (\(contents.count) items)")
 
             for itemName in contents {
-                // Skip system files
+                // Skip system files and snapshot history
                 if itemName == ".DS_Store" || itemName == ".localized" ||
                    itemName == ".Spotlight-V100" || itemName == ".Trashes" ||
-                   itemName == ".fseventsd" || itemName == ".Trash" {
+                   itemName == ".fseventsd" || itemName == ".Trash" ||
+                   itemName == ".history" {
                     continue
                 }
 
@@ -842,8 +843,8 @@ final class BackupEngine {
             logService.log(.debug, category: .backup, message: "Scanning \(directory.lastPathComponent): \(contents.count) items")
 
             for itemName in contents {
-                // Skip system files
-                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" {
+                // Skip system files and snapshot history
+                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" || itemName == ".history" {
                     continue
                 }
 
@@ -1133,8 +1134,8 @@ final class BackupEngine {
             }
 
             for itemName in contents {
-                // Skip system files
-                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" {
+                // Skip system files and snapshot history
+                if itemName == ".DS_Store" || itemName == ".localized" || itemName == ".Spotlight-V100" || itemName == ".Trashes" || itemName == ".fseventsd" || itemName == ".Trash" || itemName == ".history" {
                     continue
                 }
 

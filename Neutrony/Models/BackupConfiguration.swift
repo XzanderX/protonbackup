@@ -81,6 +81,17 @@ struct BackupConfiguration: Codable, Equatable {
     /// This helps respect the user's Proton Drive storage settings.
     var offloadAfterBackup: Bool
 
+    // MARK: - Point-in-time captures
+
+    /// How to create point-in-time captures after each backup.
+    /// When set to .apfsSnapshot, creates an APFS volume snapshot (instant, zero extra space).
+    /// When set to .apfsClone, clones the backup tree into .history/ using APFS COW copies.
+    var snapshotMode: SnapshotMode
+
+    /// Maximum number of days to keep old clone captures in .history/.
+    /// Set to 0 to keep captures indefinitely.
+    var snapshotRetentionDays: Int
+
     // MARK: - Setup state
 
     /// Whether the first-run setup wizard has been completed.
@@ -105,6 +116,8 @@ struct BackupConfiguration: Codable, Equatable {
         requireCloudSync: true,
         onDemandDownload: true,
         offloadAfterBackup: false,
+        snapshotMode: .disabled,
+        snapshotRetentionDays: 30,
         setupCompleted: false
     )
 

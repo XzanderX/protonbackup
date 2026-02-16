@@ -67,4 +67,5 @@ enum LogCategory: String, Codable, CaseIterable {
     case config
     case app
     case version
+    case history
 }

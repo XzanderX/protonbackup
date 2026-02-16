@@ -27,6 +27,7 @@ final class AppState: ObservableObject {
     private(set) var driveMonitor: DriveMonitor!
     private(set) var fileWatcher: FileWatcher!
     private(set) var versionManager: VersionManager!
+    private(set) var snapshotManager: SnapshotManager!
 
     /// Timer for periodic remote change polling.
     private var pollingTimer: Timer?
@@ -45,6 +46,7 @@ final class AppState: ObservableObject {
         self.backupEngine = BackupEngine(logService: LogService.shared, versionManager: versionMgr)
         self.driveMonitor = DriveMonitor(logService: LogService.shared)
         self.fileWatcher = FileWatcher(logService: LogService.shared)
+        self.snapshotManager = SnapshotManager(logService: LogService.shared)
 
         setupDriveMonitor()
         setupFileWatcher()
@@ -367,6 +369,32 @@ final class AppState: ObservableObject {
 
             config.lastSuccessfulBackup = Date()
             saveConfig()
+
+            // Create point-in-time capture if configured
+            if config.snapshotMode != .disabled {
+                do {
+                    let captureName = try snapshotManager.createSnapshot(
+                        backupRoot: destPath, mode: config.snapshotMode)
+                    if let name = captureName {
+                        logService.log(.info, category: .history,
+                                       message: "Point-in-time capture created: \(name)")
+                    }
+
+                    // Purge old captures if retention is configured
+                    if config.snapshotRetentionDays > 0 && config.snapshotMode == .apfsClone {
+                        let purged = try snapshotManager.purgeOldClones(
+                            backupRoot: destPath,
+                            olderThanDays: config.snapshotRetentionDays)
+                        if purged > 0 {
+                            logService.log(.info, category: .history,
+                                           message: "Purged \(purged) old capture(s)")
+                        }
+                    }
+                } catch {
+                    logService.log(.warning, category: .history,
+                                   message: "Point-in-time capture failed: \(error.localizedDescription)")
+                }
+            }
 
             lastSummary = summary
             syncState.resetAfterBackup()
