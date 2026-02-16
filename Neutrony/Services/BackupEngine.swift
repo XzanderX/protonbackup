@@ -467,99 +467,65 @@ final class BackupEngine {
         }
 
         // ============================================
-        // PHASE 0: Concurrent scan and batch structure creation
-        // Uses parallel directory scanning for much faster performance
+        // PHASE 0: Fast sequential scan with batched structure creation
+        // Scans without creating files, then batch creates everything at once
         // ============================================
         logService.log(.info, category: .backup,
-                       message: "Phase 0: Scanning directory structure (concurrent)...")
-
-        // Thread-safe containers for concurrent access
-        let localFilesLock = NSLock()
-        let cloudFilesLock = NSLock()
-        let foldersLock = NSLock()
-        let statsLock = NSLock()
+                       message: "Phase 0: Scanning directory structure...")
 
         var localFilesToBackup: [(url: URL, relPath: String)] = []
         var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
         var foldersToCreate: Set<String> = []
         var placeholdersToCreate: [(destPath: String, relPath: String, isCloudOnly: Bool, sourceURL: URL)] = []
 
-        // First pass: concurrent directory scan to discover all items
-        // This is much faster than sequential scanning
-        await withTaskGroup(of: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)]?.self) { group in
-            var pendingDirectories: [URL] = [sourceURL]
-            var visitedDirectories: Set<String> = []
-            var batchCount = 0
+        // Fast sequential scan using a queue (no file creation during scan)
+        var directoryQueue: [URL] = [sourceURL]
+        var directoriesScanned = 0
 
-            while !pendingDirectories.isEmpty {
-                // Process directories in batches for better concurrency
-                let batch = pendingDirectories
-                pendingDirectories = []
-                batchCount += 1
+        while !directoryQueue.isEmpty {
+            let directory = directoryQueue.removeFirst()
+            directoriesScanned += 1
 
-                // Launch concurrent tasks for each directory in the batch
-                for directory in batch {
-                    let dirPath = directory.path
-                    guard !visitedDirectories.contains(dirPath) else { continue }
-                    visitedDirectories.insert(dirPath)
+            // Yield to prevent blocking - every 50 directories
+            if directoriesScanned % 50 == 0 {
+                await Task.yield()
+                logService.log(.debug, category: .backup,
+                               message: "Scanned \(directoriesScanned) directories, found \(placeholdersToCreate.count) files...")
+            }
 
-                    group.addTask {
-                        return self.scanDirectoryContents(
-                            directory: directory,
-                            sourceURL: sourceURL,
-                            backupRoot: backupRoot
-                        )
-                    }
-                }
+            guard let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) else {
+                continue
+            }
 
-                // Collect results and queue subdirectories
-                for await result in group {
-                    guard let items = result else { continue }
+            for item in items {
+                if item.isDir {
+                    // Queue subdirectory for processing
+                    directoryQueue.append(item.item)
 
-                    for item in items {
-                        if item.isDir {
-                            // Queue subdirectory for next batch
-                            pendingDirectories.append(item.item)
+                    // Collect folder to create
+                    let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                    foldersToCreate.insert(destDirPath)
+                } else {
+                    // It's a file - check if needs backup
+                    let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
 
-                            // Collect folder to create
-                            let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
-                            foldersLock.lock()
-                            foldersToCreate.insert(destDirPath)
-                            foldersLock.unlock()
+                    // Determine if backup needed
+                    let needsBackup: Bool
+                    if let existingSize = destFileSizes[item.relPath] {
+                        if item.isCloudOnly {
+                            needsBackup = existingSize == 0
                         } else {
-                            // It's a file - check if needs backup
-                            let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
-
-                            // Determine if backup needed
-                            let needsBackup: Bool
-                            if let existingSize = destFileSizes[item.relPath] {
-                                if item.isCloudOnly {
-                                    needsBackup = existingSize == 0
-                                } else {
-                                    needsBackup = item.localSize != existingSize
-                                }
-                            } else {
-                                needsBackup = true
-                            }
-
-                            if needsBackup {
-                                // Collect placeholder info
-                                foldersLock.lock()
-                                placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
-                                foldersLock.unlock()
-                            } else {
-                                statsLock.lock()
-                                filesSkipped += 1
-                                statsLock.unlock()
-                            }
+                            needsBackup = item.localSize != existingSize
                         }
+                    } else {
+                        needsBackup = true
                     }
-                }
 
-                // Log progress for each batch
-                if batchCount % 5 == 0 {
-                    logService.log(.info, category: .backup,
-                                   message: "Scanned \(batchCount) directory batches, found \(placeholdersToCreate.count) files...")
+                    if needsBackup {
+                        placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
+                    } else {
+                        filesSkipped += 1
+                    }
                 }
             }
         }
@@ -627,74 +593,49 @@ final class BackupEngine {
         }
 
         // ============================================
-        // PHASE 1: Copy LOCAL files concurrently (replace placeholders with actual content)
+        // PHASE 1: Copy LOCAL files (sequential for stability, yields for responsiveness)
         // ============================================
         if !localFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
-                           message: "Phase 1: Copying \(localFilesToBackup.count) local files concurrently...")
+                           message: "Phase 1: Copying \(localFilesToBackup.count) local files...")
 
-            // Thread-safe counters for concurrent operations
-            let completedLock = NSLock()
-            let errorsLock = NSLock()
-
-            // Process files in concurrent batches
-            let batchSize = maxConcurrentOperations
-            var currentBatchStart = 0
-
-            while currentBatchStart < localFilesToBackup.count {
-                // Check for pause before each batch
+            for (fileURL, relPath) in localFilesToBackup {
+                // Check for pause
                 while pauseChecker?() == true {
                     try await Task.sleep(nanoseconds: 500_000_000)
                 }
 
-                let batchEnd = min(currentBatchStart + batchSize, localFilesToBackup.count)
-                let batch = Array(localFilesToBackup[currentBatchStart..<batchEnd])
-
-                // Update progress at batch level (reduces UI overhead)
-                let currentProgress = BackupProgress(
-                    totalFiles: totalWork,
-                    completedFiles: completed,
-                    currentFileName: "Copying \(batch.count) files..."
-                )
-                progressHandler(currentProgress)
-
-                // Process batch concurrently
-                await withTaskGroup(of: (String, Bool, String?).self) { group in
-                    for (fileURL, relPath) in batch {
-                        group.addTask {
-                            // Mark file as syncing in Finder
-                            self.badgeService.markFileSyncing(relativePath: relPath)
-
-                            do {
-                                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-                                try await self.copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
-                                self.badgeService.markFileComplete(relativePath: relPath)
-                                return (relPath, true, nil)
-                            } catch {
-                                let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
-                                self.logService.log(.error, category: .backup, message: desc, filePath: relPath)
-                                self.badgeService.markFileError(relativePath: relPath)
-                                return (relPath, false, desc)
-                            }
-                        }
-                    }
-
-                    // Collect results
-                    for await (_, success, errorDesc) in group {
-                        completedLock.lock()
-                        completed += 1
-                        if success {
-                            filesUpdated += 1
-                        } else if let desc = errorDesc {
-                            errorsLock.lock()
-                            errors.append(desc)
-                            errorsLock.unlock()
-                        }
-                        completedLock.unlock()
-                    }
+                // Yield every 10 files to keep UI responsive
+                if completed % 10 == 0 {
+                    await Task.yield()
                 }
 
-                currentBatchStart = batchEnd
+                // Update progress every 20 files to reduce UI overhead
+                if completed % 20 == 0 {
+                    let currentProgress = BackupProgress(
+                        totalFiles: totalWork,
+                        completedFiles: completed,
+                        currentFileName: relPath
+                    )
+                    progressHandler(currentProgress)
+                }
+
+                // Mark file as syncing in Finder
+                badgeService.markFileSyncing(relativePath: relPath)
+
+                do {
+                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    try await copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
+                    filesUpdated += 1
+                    badgeService.markFileComplete(relativePath: relPath)
+                } catch {
+                    let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
+                    errors.append(desc)
+                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                    badgeService.markFileError(relativePath: relPath)
+                }
+
+                completed += 1
             }
 
             logService.log(.info, category: .backup,
