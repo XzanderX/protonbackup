@@ -62,6 +62,10 @@ targets:
           - "@executable_path/../../../../Frameworks"
     info:
       path: FinderSyncExtension/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.FinderSync
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FinderSync
     entitlements:
       path: FinderSyncExtension/FinderSyncExtension.entitlements
 
