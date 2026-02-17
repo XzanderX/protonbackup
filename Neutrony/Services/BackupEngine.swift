@@ -1,5 +1,31 @@
 import Foundation
 
+// MARK: - File Structure Cache
+
+/// Cached information about a file in the source directory
+struct CachedFileInfo: Codable {
+    let relPath: String
+    let isDirectory: Bool
+    let isCloudOnly: Bool
+    let size: Int64
+    let modTime: Date?
+}
+
+/// Cache of the source file structure to speed up subsequent backups
+struct FileStructureCache: Codable {
+    let version: Int = 1
+    let sourcePath: String
+    let scanDate: Date
+    let files: [CachedFileInfo]
+    let directories: [String]
+    let totalScanned: Int
+
+    /// Cache is considered fresh if less than 1 hour old
+    var isFresh: Bool {
+        Date().timeIntervalSince(scanDate) < 3600
+    }
+}
+
 /// Manages copying files from Proton Drive to the external backup destination.
 /// Supports two modes:
 /// 1. Local folder mode: Copies from the Proton Drive app's local sync folder
@@ -42,6 +68,74 @@ final class BackupEngine {
     init(logService: LogService, versionManager: VersionManager) {
         self.logService = logService
         self.versionManager = versionManager
+    }
+
+    // MARK: - Cache Management
+
+    /// Path to the structure cache file in the backup's .backup folder
+    private func cachePath(for backupRoot: String) -> String {
+        let backupFolder = (backupRoot as NSString).appendingPathComponent(".backup")
+        return (backupFolder as NSString).appendingPathComponent("structure-cache.json")
+    }
+
+    /// Load the cached file structure from the backup destination
+    private func loadCache(backupRoot: String, sourcePath: String) -> FileStructureCache? {
+        let path = cachePath(for: backupRoot)
+        guard let data = FileManager.default.contents(atPath: path) else {
+            logService.log(.debug, category: .backup, message: "No structure cache found")
+            return nil
+        }
+
+        do {
+            let cache = try JSONDecoder().decode(FileStructureCache.self, from: data)
+
+            // Verify cache is for the same source
+            guard cache.sourcePath == sourcePath else {
+                logService.log(.info, category: .backup, message: "Cache source mismatch, will rescan")
+                return nil
+            }
+
+            // Check if cache is fresh
+            if cache.isFresh {
+                logService.log(.info, category: .backup,
+                               message: "Loaded structure cache: \(cache.files.count) files, \(cache.directories.count) dirs (age: \(Int(Date().timeIntervalSince(cache.scanDate)))s)")
+                return cache
+            } else {
+                logService.log(.info, category: .backup,
+                               message: "Cache is stale (age: \(Int(Date().timeIntervalSince(cache.scanDate)/60))min), will rescan")
+                return nil
+            }
+        } catch {
+            logService.log(.warning, category: .backup, message: "Failed to load cache: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Save the scanned file structure to cache
+    private func saveCache(backupRoot: String, sourcePath: String, files: [CachedFileInfo], directories: [String]) {
+        let cache = FileStructureCache(
+            sourcePath: sourcePath,
+            scanDate: Date(),
+            files: files,
+            directories: directories,
+            totalScanned: files.count + directories.count
+        )
+
+        let path = cachePath(for: backupRoot)
+        let backupFolder = (path as NSString).deletingLastPathComponent
+
+        do {
+            // Ensure .backup folder exists
+            try FileManager.default.createDirectory(atPath: backupFolder, withIntermediateDirectories: true)
+
+            let data = try JSONEncoder().encode(cache)
+            try data.write(to: URL(fileURLWithPath: path))
+
+            logService.log(.info, category: .backup,
+                           message: "Saved structure cache: \(files.count) files, \(directories.count) dirs")
+        } catch {
+            logService.log(.warning, category: .backup, message: "Failed to save cache: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Public API
@@ -472,7 +566,7 @@ final class BackupEngine {
 
         // ============================================
         // PHASE 0: Fast sequential scan with batched structure creation
-        // Scans without creating files, then batch creates everything at once
+        // Uses cache when available to speed up subsequent backups
         // ============================================
         logService.log(.info, category: .backup,
                        message: "Phase 0: Scanning directory structure...")
@@ -483,6 +577,82 @@ final class BackupEngine {
         var foldersAlreadyCreated: Set<String> = []  // Track what we've already flushed
         var placeholdersToCreate: [(destPath: String, relPath: String, isCloudOnly: Bool, sourceURL: URL)] = []
         var totalFilesFound = 0
+        var cachedFileInfos: [CachedFileInfo] = []  // For saving to cache
+        var cachedDirectories: [String] = []  // For saving to cache
+        var usedCache = false
+
+        // Try to load cached structure for faster startup
+        if let cache = loadCache(backupRoot: backupRoot, sourcePath: sourcePath) {
+            logService.log(.info, category: .backup,
+                           message: "Using cached structure (\(cache.files.count) files, \(cache.directories.count) dirs)")
+            usedCache = true
+
+            // Create all directories from cache
+            for dirPath in cache.directories {
+                let destDirPath = (backupRoot as NSString).appendingPathComponent(dirPath)
+                if !foldersAlreadyCreated.contains(destDirPath) {
+                    try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
+                    foldersAlreadyCreated.insert(destDirPath)
+                    foldersCreated += 1
+                }
+            }
+
+            // Process files from cache
+            for fileInfo in cache.files {
+                let destFilePath = (backupRoot as NSString).appendingPathComponent(fileInfo.relPath)
+                let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
+
+                // Determine if backup needed
+                let needsBackup: Bool
+                if let existingSize = destFileSizes[fileInfo.relPath] {
+                    if fileInfo.isCloudOnly {
+                        needsBackup = existingSize == 0
+                    } else {
+                        needsBackup = fileInfo.size != existingSize
+                    }
+                } else {
+                    needsBackup = true
+                }
+
+                if needsBackup {
+                    // Create placeholder if doesn't exist
+                    if !fm.fileExists(atPath: destFilePath) {
+                        // Ensure parent directory exists
+                        let destParent = (destFilePath as NSString).deletingLastPathComponent
+                        if !foldersAlreadyCreated.contains(destParent) {
+                            try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true)
+                            foldersAlreadyCreated.insert(destParent)
+                        }
+                        fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
+                        placeholdersCreated += 1
+                    }
+
+                    // Categorize for later phases
+                    if fileInfo.isCloudOnly {
+                        cloudOnlyFilesToBackup.append((fileURL, fileInfo.relPath, nil))
+                    } else {
+                        localFilesToBackup.append((fileURL, fileInfo.relPath))
+                    }
+                    totalFilesFound += 1
+                } else {
+                    filesSkipped += 1
+                }
+
+                // Update progress periodically
+                if (totalFilesFound + filesSkipped) % 1000 == 0 {
+                    await Task.yield()
+                    let progress = BackupProgress(
+                        totalFiles: cache.files.count,
+                        completedFiles: totalFilesFound + filesSkipped,
+                        currentFileName: "Processing cached structure..."
+                    )
+                    progressHandler(progress)
+                }
+            }
+
+            logService.log(.info, category: .backup,
+                           message: "Cache processed: \(totalFilesFound) files to backup, \(filesSkipped) skipped")
+        }
 
         // Helper function to flush collected folders and placeholders to disk
         // This allows us to make progress even while scanning continues
@@ -543,97 +713,113 @@ final class BackupEngine {
             await Task.yield()
         }
 
-        // Fast sequential scan using a queue with incremental flushing
-        var directoryQueue: [URL] = [sourceURL]
-        var directoriesScanned = 0
-        let flushThreshold = 2000  // Flush every 2000 files
+        // Only do full scan if we didn't use cached structure
+        if !usedCache {
+            // Fast sequential scan using a queue with incremental flushing
+            var directoryQueue: [URL] = [sourceURL]
+            var directoriesScanned = 0
+            let flushThreshold = 2000  // Flush every 2000 files
 
-        while !directoryQueue.isEmpty {
-            let directory = directoryQueue.removeFirst()
-            directoriesScanned += 1
+            while !directoryQueue.isEmpty {
+                let directory = directoryQueue.removeFirst()
+                directoriesScanned += 1
 
-            // Yield and update progress every 50 directories
-            if directoriesScanned % 50 == 0 {
-                await Task.yield()
-                logService.log(.debug, category: .backup,
-                               message: "Scanned \(directoriesScanned) directories, found \(totalFilesFound) files...")
-                // Update UI during scan so it doesn't appear stuck
-                let scanProgress = BackupProgress(
-                    totalFiles: 0,
-                    completedFiles: placeholdersCreated,
-                    currentFileName: "Scanning: \(totalFilesFound) files found..."
-                )
-                progressHandler(scanProgress)
-            }
+                // Yield and update progress every 50 directories
+                if directoriesScanned % 50 == 0 {
+                    await Task.yield()
+                    logService.log(.debug, category: .backup,
+                                   message: "Scanned \(directoriesScanned) directories, found \(totalFilesFound) files...")
+                    // Update UI during scan so it doesn't appear stuck
+                    let scanProgress = BackupProgress(
+                        totalFiles: 0,
+                        completedFiles: placeholdersCreated,
+                        currentFileName: "Scanning: \(totalFilesFound) files found..."
+                    )
+                    progressHandler(scanProgress)
+                }
 
-            // Track how long each directory takes to scan
-            let scanStart = Date()
-            guard let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) else {
-                continue
-            }
-            let scanDuration = Date().timeIntervalSince(scanStart)
+                // Track how long each directory takes to scan
+                let scanStart = Date()
+                guard let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) else {
+                    continue
+                }
+                let scanDuration = Date().timeIntervalSince(scanStart)
 
-            // If we hit a slow directory, flush pending items first so user sees progress
-            if scanDuration > 2.0 {
-                let relPath = relativePath(from: sourceURL, to: directory)
-                logService.log(.warning, category: .backup,
-                               message: "Slow directory (\(String(format: "%.1f", scanDuration))s): \(relPath)")
-                await flushPendingItems()
-            }
+                // If we hit a slow directory, flush pending items first so user sees progress
+                if scanDuration > 2.0 {
+                    let relPath = relativePath(from: sourceURL, to: directory)
+                    logService.log(.warning, category: .backup,
+                                   message: "Slow directory (\(String(format: "%.1f", scanDuration))s): \(relPath)")
+                    await flushPendingItems()
+                }
 
-            for item in items {
-                if item.isDir {
-                    // Queue subdirectory for processing
-                    directoryQueue.append(item.item)
+                for item in items {
+                    if item.isDir {
+                        // Queue subdirectory for processing
+                        directoryQueue.append(item.item)
 
-                    // Collect folder to create
-                    let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
-                    if !foldersAlreadyCreated.contains(destDirPath) {
-                        foldersToCreate.insert(destDirPath)
-                    }
-                } else {
-                    // It's a file - check if needs backup
-                    let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
-
-                    // Determine if backup needed
-                    let needsBackup: Bool
-                    if let existingSize = destFileSizes[item.relPath] {
-                        if item.isCloudOnly {
-                            needsBackup = existingSize == 0
-                        } else {
-                            needsBackup = item.localSize != existingSize
+                        // Collect folder to create and cache
+                        let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                        if !foldersAlreadyCreated.contains(destDirPath) {
+                            foldersToCreate.insert(destDirPath)
                         }
+                        cachedDirectories.append(item.relPath)
                     } else {
-                        needsBackup = true
-                    }
+                        // Collect file info for cache (all files, not just ones needing backup)
+                        cachedFileInfos.append(CachedFileInfo(
+                            relPath: item.relPath,
+                            isDirectory: false,
+                            isCloudOnly: item.isCloudOnly,
+                            size: item.localSize,
+                            modTime: nil
+                        ))
 
-                    if needsBackup {
-                        placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
-                        totalFilesFound += 1
-                    } else {
-                        filesSkipped += 1
-                        // Log first few skipped files for debugging
-                        if filesSkipped <= 3 {
-                            let existingSize = destFileSizes[item.relPath] ?? -1
-                            logService.log(.debug, category: .backup,
-                                           message: "Skipped (size match): \(item.relPath) local=\(item.localSize) dest=\(existingSize)")
+                        // It's a file - check if needs backup
+                        let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+
+                        // Determine if backup needed
+                        let needsBackup: Bool
+                        if let existingSize = destFileSizes[item.relPath] {
+                            if item.isCloudOnly {
+                                needsBackup = existingSize == 0
+                            } else {
+                                needsBackup = item.localSize != existingSize
+                            }
+                        } else {
+                            needsBackup = true
+                        }
+
+                        if needsBackup {
+                            placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
+                            totalFilesFound += 1
+                        } else {
+                            filesSkipped += 1
+                            // Log first few skipped files for debugging
+                            if filesSkipped <= 3 {
+                                let existingSize = destFileSizes[item.relPath] ?? -1
+                                logService.log(.debug, category: .backup,
+                                               message: "Skipped (size match): \(item.relPath) local=\(item.localSize) dest=\(existingSize)")
+                            }
                         }
                     }
                 }
+
+                // Flush periodically based on file count
+                if placeholdersToCreate.count >= flushThreshold {
+                    logService.log(.info, category: .backup,
+                                   message: "Reached \(flushThreshold) files, flushing to disk...")
+                    await flushPendingItems()
+                }
             }
 
-            // Flush periodically based on file count
-            if placeholdersToCreate.count >= flushThreshold {
-                logService.log(.info, category: .backup,
-                               message: "Reached \(flushThreshold) files, flushing to disk...")
-                await flushPendingItems()
-            }
+            // Final flush for any remaining items
+            logService.log(.info, category: .backup,
+                           message: "Scan complete: \(totalFilesFound) files to process, \(filesSkipped) skipped")
+            await flushPendingItems()
+
+            // Save the structure cache for faster subsequent backups
+            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: cachedFileInfos, directories: cachedDirectories)
         }
-
-        // Final flush for any remaining items
-        logService.log(.info, category: .backup,
-                       message: "Scan complete: \(totalFilesFound) files to process, \(filesSkipped) skipped")
-        await flushPendingItems()
 
         logService.log(.info, category: .backup,
                        message: "Phase 0 complete: \(foldersCreated) folders, \(placeholdersCreated) placeholders created")
