@@ -13,7 +13,7 @@ struct CachedFileInfo: Codable {
 
 /// Cache of the source file structure to speed up subsequent backups
 struct FileStructureCache: Codable {
-    let version: Int = 1
+    var version: Int = 1
     let sourcePath: String
     let scanDate: Date
     let files: [CachedFileInfo]
@@ -28,7 +28,7 @@ struct FileStructureCache: Codable {
 
 /// Cache of destination file sizes to speed up reconnection
 struct DestinationCache: Codable {
-    let version: Int = 1
+    var version: Int = 1
     let destinationPath: String
     let scanDate: Date
     let fileSizes: [String: Int64]
@@ -1134,7 +1134,9 @@ final class BackupEngine {
                     group.addTask { [self] in
                         while true {
                             // Check if there's work or if more might come
-                            if await copyQueue.isDone() && await dirQueue.isFinished() {
+                            let queueDone = await copyQueue.isDone()
+                            let scanDone = await dirQueue.isFinished()
+                            if queueDone && scanDone {
                                 break
                             }
 
@@ -1172,13 +1174,16 @@ final class BackupEngine {
                 }
 
                 // Progress update task
-                group.addTask {
-                    while await dirQueue.hasWork() || await copyQueue.hasWork() {
+                group.addTask { [self] in
+                    while true {
+                        let dirHasWork = await dirQueue.hasWork()
+                        let copyHasWork = await copyQueue.hasWork()
+                        guard dirHasWork || copyHasWork else { break }
+
                         try? await Task.sleep(nanoseconds: 200_000_000) // Update every 200ms
                         let dirsScanned = await collector.directoriesScanned
                         let filesFound = await collector.totalFilesFound
-                        let skipped = await collector.filesSkipped
-                        let (queued, copied, pending) = await copyQueue.getStats()
+                        let (queued, copied, _) = await copyQueue.getStats()
 
                         let elapsed = Date().timeIntervalSince(scanStartTime)
                         let scanRate = elapsed > 0 ? Double(dirsScanned) / elapsed : 0
