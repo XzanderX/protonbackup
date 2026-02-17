@@ -20,9 +20,22 @@ struct FileStructureCache: Codable {
     let directories: [String]
     let totalScanned: Int
 
-    /// Cache is considered fresh if less than 1 hour old
+    /// Cache is considered fresh if less than 4 hours old
     var isFresh: Bool {
-        Date().timeIntervalSince(scanDate) < 3600
+        Date().timeIntervalSince(scanDate) < 14400
+    }
+}
+
+/// Cache of destination file sizes to speed up reconnection
+struct DestinationCache: Codable {
+    let version: Int = 1
+    let destinationPath: String
+    let scanDate: Date
+    let fileSizes: [String: Int64]
+
+    /// Cache is fresh if less than 4 hours old
+    var isFresh: Bool {
+        Date().timeIntervalSince(scanDate) < 14400
     }
 }
 
@@ -239,15 +252,6 @@ actor FileCopyQueue {
         return (filesQueued, filesProcessed, queue.count)
     }
 }
-                    totalFilesFound += 1
-                } else {
-                    filesSkipped += 1
-                }
-            }
-        }
-        directoriesScanned += 1
-    }
-}
 
 /// Manages copying files from Proton Drive to the external backup destination.
 /// Supports two modes:
@@ -362,6 +366,142 @@ final class BackupEngine {
         } catch {
             logService.log(.warning, category: .backup, message: "Failed to save cache: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Destination Cache
+
+    /// Path to the destination cache file
+    private func destCachePath(for backupRoot: String) -> String {
+        let backupFolder = (backupRoot as NSString).appendingPathComponent(".backup")
+        return (backupFolder as NSString).appendingPathComponent("dest-cache.json")
+    }
+
+    /// Load cached destination file sizes for fast reconnection
+    private func loadDestCache(backupRoot: String) -> DestinationCache? {
+        let path = destCachePath(for: backupRoot)
+        guard let data = FileManager.default.contents(atPath: path) else {
+            return nil
+        }
+
+        do {
+            let cache = try JSONDecoder().decode(DestinationCache.self, from: data)
+            guard cache.destinationPath == backupRoot, cache.isFresh else {
+                logService.log(.info, category: .backup, message: "Destination cache stale, will rescan")
+                return nil
+            }
+            logService.log(.info, category: .backup,
+                           message: "Loaded destination cache: \(cache.fileSizes.count) files (age: \(Int(Date().timeIntervalSince(cache.scanDate)))s)")
+            return cache
+        } catch {
+            return nil
+        }
+    }
+
+    /// Save destination file sizes to cache
+    private func saveDestCache(backupRoot: String, fileSizes: [String: Int64]) {
+        let cache = DestinationCache(
+            destinationPath: backupRoot,
+            scanDate: Date(),
+            fileSizes: fileSizes
+        )
+
+        let path = destCachePath(for: backupRoot)
+        let backupFolder = (path as NSString).deletingLastPathComponent
+
+        do {
+            try FileManager.default.createDirectory(atPath: backupFolder, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(cache)
+            try data.write(to: URL(fileURLWithPath: path))
+            logService.log(.debug, category: .backup,
+                           message: "Saved destination cache: \(fileSizes.count) files")
+        } catch {
+            logService.log(.warning, category: .backup, message: "Failed to save dest cache: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Fast Destination Scanner
+
+    /// Scan destination directory using stat() for fast file size collection.
+    /// Returns a dictionary of relative paths to file sizes.
+    /// Uses parallel directory traversal for speed.
+    private func scanDestinationSizes(destURL: URL) -> [String: Int64] {
+        let fm = FileManager.default
+        let basePath = destURL.path
+        var results: [String: Int64] = [:]
+        let lock = NSLock()
+
+        // Recursive scan using stat() - much faster than attributesOfItem
+        func scanDir(_ dirPath: String) {
+            guard let items = try? fm.contentsOfDirectory(atPath: dirPath) else { return }
+
+            var subdirs: [String] = []
+            var localResults: [(String, Int64)] = []
+
+            for itemName in items {
+                // Skip hidden files and system files
+                if itemName.hasPrefix(".") { continue }
+                if itemName == "_versions" { continue }
+
+                let itemPath = (dirPath as NSString).appendingPathComponent(itemName)
+
+                var statInfo = stat()
+                guard stat(itemPath, &statInfo) == 0 else { continue }
+
+                let isDirectory = (statInfo.st_mode & S_IFMT) == S_IFDIR
+                if isDirectory {
+                    subdirs.append(itemPath)
+                } else {
+                    // Compute relative path
+                    var relPath = String(itemPath.dropFirst(basePath.count))
+                    if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
+                    localResults.append((relPath, Int64(statInfo.st_size)))
+                }
+            }
+
+            // Batch insert results
+            if !localResults.isEmpty {
+                lock.lock()
+                for (path, size) in localResults {
+                    results[path] = size
+                }
+                lock.unlock()
+            }
+
+            // Recurse into subdirectories
+            for subdir in subdirs {
+                scanDir(subdir)
+            }
+        }
+
+        // Start scan - use DispatchQueue for parallelism on top-level dirs
+        guard let topItems = try? fm.contentsOfDirectory(atPath: basePath) else { return results }
+
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "com.neutrony.destScan", attributes: .concurrent)
+
+        for itemName in topItems {
+            if itemName.hasPrefix(".") || itemName == "_versions" { continue }
+
+            let itemPath = (basePath as NSString).appendingPathComponent(itemName)
+            var statInfo = stat()
+            guard stat(itemPath, &statInfo) == 0 else { continue }
+
+            let isDirectory = (statInfo.st_mode & S_IFMT) == S_IFDIR
+            if isDirectory {
+                group.enter()
+                queue.async {
+                    scanDir(itemPath)
+                    group.leave()
+                }
+            } else {
+                var relPath = String(itemPath.dropFirst(basePath.count))
+                if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
+                results[relPath] = Int64(statInfo.st_size)
+            }
+        }
+
+        group.wait()
+        return results
     }
 
     // MARK: - Public API
@@ -776,19 +916,23 @@ final class BackupEngine {
         let destURL = URL(fileURLWithPath: backupRoot)
 
         // Get existing destination files for comparison
-        let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
-        var destFileSizes: [String: Int64] = [:]
-        var zeroByteCount = 0
-        for destFile in destFiles {
-            let relPath = relativePath(from: destURL, to: destFile)
-            if let attrs = try? fm.attributesOfItem(atPath: destFile.path),
-               let size = attrs[.size] as? Int64 {
-                destFileSizes[relPath] = size
-                if size == 0 { zeroByteCount += 1 }
-            }
+        // Try cached destination first for fast reconnection
+        let destScanStart = Date()
+        var destFileSizes: [String: Int64]
+        if let destCache = loadDestCache(backupRoot: backupRoot) {
+            destFileSizes = destCache.fileSizes
+            logService.log(.info, category: .backup,
+                           message: "Using cached destination: \(destFileSizes.count) files (instant)")
+        } else {
+            logService.log(.info, category: .backup, message: "Scanning destination with stat()...")
+            destFileSizes = scanDestinationSizes(destURL: destURL)
+            let scanTime = Date().timeIntervalSince(destScanStart)
+            logService.log(.info, category: .backup,
+                           message: "Destination scan complete: \(destFileSizes.count) files in \(String(format: "%.1f", scanTime))s")
         }
+        let zeroByteCount = destFileSizes.values.filter { $0 == 0 }.count
         logService.log(.info, category: .backup,
-                       message: "Destination has \(destFiles.count) files (\(zeroByteCount) are 0-byte placeholders)")
+                       message: "Destination has \(destFileSizes.count) files (\(zeroByteCount) are 0-byte placeholders)")
 
         // ============================================
         // PHASE 0: Fast sequential scan with batched structure creation
@@ -1090,7 +1234,7 @@ final class BackupEngine {
             // From scan: use the tracked source paths
             sourceRelative = Set(cachedFileInfos.map { $0.relPath })
         }
-        let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
+        let destRelative = Set(destFileSizes.keys)
         let filesToDelete = destRelative.subtracting(sourceRelative)
 
         // Total remaining work: cloud-only files + deletions (local files already copied)
@@ -1230,6 +1374,29 @@ final class BackupEngine {
                        message: "On-demand backup complete: \(summary.displayText)")
         logService.log(.info, category: .backup,
                        message: "Stats: \(placeholdersCreated) placeholders, \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
+
+        // Save updated destination cache for fast reconnection
+        // After backup, update dest sizes based on what we know changed
+        var updatedDestSizes = destFileSizes
+        // Update local files that were copied during scan
+        for fileInfo in cachedFileInfos where !fileInfo.isCloudOnly {
+            if updatedDestSizes[fileInfo.relPath] != fileInfo.size {
+                updatedDestSizes[fileInfo.relPath] = fileInfo.size
+            }
+        }
+        // Update cloud files that were downloaded
+        for (_, relPath, _) in cloudOnlyFilesToBackup {
+            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+            var statInfo = stat()
+            if stat(destPath, &statInfo) == 0 {
+                updatedDestSizes[relPath] = Int64(statInfo.st_size)
+            }
+        }
+        // Remove deleted files
+        for relPath in filesToDelete {
+            updatedDestSizes.removeValue(forKey: relPath)
+        }
+        saveDestCache(backupRoot: backupRoot, fileSizes: updatedDestSizes)
 
         // Mark backup as complete in Finder
         badgeService.backupCompleted(destinationPath: destinationPath)
