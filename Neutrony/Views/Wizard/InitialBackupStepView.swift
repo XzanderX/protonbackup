@@ -31,8 +31,6 @@ struct InitialBackupStepView: View {
                 SettingRow(icon: "externaldrive.fill", label: "Destination", value: wizardState.destinationName ?? "External Drive")
 
                 SettingRow(icon: "doc.on.doc.fill", label: "Deletion Policy", value: wizardState.deletionPolicy.displayName)
-
-                SettingRow(icon: "clock.arrow.circlepath", label: "Keep Versions", value: wizardState.keepVersions ? "Yes" : "No")
             }
             .padding()
             .background(Color(NSColor.controlBackgroundColor))

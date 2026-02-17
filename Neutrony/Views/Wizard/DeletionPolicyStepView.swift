@@ -28,28 +28,12 @@ struct DeletionPolicyStepView: View {
                     PolicyOptionView(
                         policy: policy,
                         isSelected: wizardState.deletionPolicy == policy,
-                        isRecommended: policy == .mirrorWithVersions
+                        isRecommended: policy == .mirrorDeletions
                     ) {
                         wizardState.deletionPolicy = policy
-                        if policy == .mirrorWithVersions || policy == .mirrorDeletions {
-                            wizardState.keepVersions = true
-                        }
                     }
                 }
             }
-            .frame(maxWidth: 420)
-
-            // Versioning toggle
-            Toggle(isOn: $wizardState.keepVersions) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Keep file versions")
-                        .font(.body)
-                    Text("When a file is overwritten, save the previous version in a dated _versions folder.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
             .frame(maxWidth: 420)
 
             Spacer()

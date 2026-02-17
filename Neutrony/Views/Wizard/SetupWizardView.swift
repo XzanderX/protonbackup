@@ -114,8 +114,8 @@ class WizardState: ObservableObject {
     @Published var destinationPath: String?
 
     // Deletion policy state
-    @Published var deletionPolicy: DeletionPolicy = .mirrorWithVersions
-    @Published var keepVersions = true
+    @Published var deletionPolicy: DeletionPolicy = .mirrorDeletions
+    @Published var keepVersions = false  // Disabled for now
 
     // Initial backup state
     @Published var initialBackupComplete = false

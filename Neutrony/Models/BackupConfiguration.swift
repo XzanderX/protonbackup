@@ -105,8 +105,8 @@ struct BackupConfiguration: Codable, Equatable {
         destinationDisplayName: nil,
         localMirrorPath: defaultMirrorPath,
         pollingIntervalMinutes: 30,
-        deletionPolicy: .mirrorWithVersions,
-        keepVersions: true,
+        deletionPolicy: .mirrorDeletions,
+        keepVersions: false,  // Disabled for now
         notificationsEnabled: true,
         startAtLogin: false,
         lastSuccessfulBackup: nil,

@@ -204,19 +204,20 @@ struct BackupSettingsView: View {
                     }
                 }
 
-                Toggle("Keep file versions", isOn: Binding(
-                    get: { appState.config.keepVersions },
-                    set: { newValue in
-                        appState.config.keepVersions = newValue
-                        appState.saveConfig()
-                    }
-                ))
+                // Versioning disabled for now
+                // Toggle("Keep file versions", isOn: Binding(
+                //     get: { appState.config.keepVersions },
+                //     set: { newValue in
+                //         appState.config.keepVersions = newValue
+                //         appState.saveConfig()
+                //     }
+                // ))
 
                 Text(appState.config.deletionPolicy.explanation)
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Deletion & Versioning")
+                Text("Deletion Policy")
             }
 
             Section {
