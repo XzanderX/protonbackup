@@ -274,7 +274,7 @@ final class AppState: ObservableObject {
         logService.log(.info, category: .backup, message: "Backup cancelled (drive ejected)")
 
         // Clear badges
-        badgeService.clearAllBadges()
+        BadgeService.shared.clearAllBadges()
     }
 
     /// Backup from Proton Drive folder to external destination.
