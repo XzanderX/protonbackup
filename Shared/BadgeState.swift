@@ -100,23 +100,11 @@ public final class BadgeStateManager {
 
     /// Get badge for a specific path
     public func badge(for path: String) -> BadgeIdentifier {
-        // Check exact path first
+        // Only return badge if this exact path has one
+        // Don't inherit from parent folders - each file/folder manages its own badge
         if let state = badgeStates[path] {
             return state.badge
         }
-
-        // Check if any parent has a badge (for directory badges)
-        var currentPath = path
-        while currentPath != "/" {
-            currentPath = (currentPath as NSString).deletingLastPathComponent
-            if let state = badgeStates[currentPath], state.badge != .none {
-                // Don't inherit error/complete badges from parent
-                if state.badge == .syncing || state.badge == .downloading {
-                    return state.badge
-                }
-            }
-        }
-
         return .none
     }
 
