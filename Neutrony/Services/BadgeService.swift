@@ -92,7 +92,16 @@ final class BadgeService {
     func markFileComplete(relativePath: String) {
         guard let dest = activeDestination else { return }
         let fullPath = (dest as NSString).appendingPathComponent(relativePath)
-        badgeManager.clearBadge(for: fullPath)
+        badgeManager.setBadge(.complete, for: fullPath)
+    }
+
+    /// Clear completed badge after backup finishes (batch operation).
+    func clearCompletedBadges() {
+        // Clear all complete badges, keep error badges
+        let pathsToClear = badgeManager.badgeStates.filter { $0.value.badge == .complete }.map { $0.key }
+        for path in pathsToClear {
+            badgeManager.clearBadge(for: path)
+        }
     }
 
     /// Mark a file as having an error.
