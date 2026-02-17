@@ -1129,39 +1129,40 @@ final class BackupEngine {
 
     /// Scan contents of a single directory for concurrent processing.
     /// Returns items with their metadata without recursing (recursion handled by caller).
-    /// Uses URL-based API with prefetched resource keys to avoid blocking on cloud items.
+    /// Uses path-based API to avoid blocking on cloud metadata fetches.
     private func scanDirectoryContents(
         directory: URL,
         sourceURL: URL,
         backupRoot: String
     ) -> [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)]? {
         let fm = FileManager.default
+        let dirPath = directory.path
 
-        // Use URL-based API with prefetched keys - this is CloudStorage-friendly
-        // These keys are fetched from local metadata without triggering downloads
-        let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
-
-        guard let contents = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles]
-        ) else {
+        // Use simple path-based directory listing - faster and doesn't fetch cloud metadata
+        guard let itemNames = try? fm.contentsOfDirectory(atPath: dirPath) else {
             return nil
         }
 
         var results: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)] = []
-        results.reserveCapacity(contents.count)
+        results.reserveCapacity(itemNames.count)
 
-        for itemURL in contents {
-            let itemName = itemURL.lastPathComponent
+        let isInCloudStorage = dirPath.contains("/Library/CloudStorage/")
 
-            // Skip system files and snapshot history (some may not be hidden)
-            if itemName == ".Spotlight-V100" || itemName == ".Trashes" ||
-               itemName == ".fseventsd" || itemName == ".Trash" ||
-               itemName == ".history" {
+        for itemName in itemNames {
+            // Skip hidden files and system files
+            if itemName.hasPrefix(".") {
                 continue
             }
 
+            // Skip system directories
+            if itemName == "Spotlight-V100" || itemName == "Trashes" ||
+               itemName == "fseventsd" || itemName == "Trash" ||
+               itemName == "history" {
+                continue
+            }
+
+            let itemPath = (dirPath as NSString).appendingPathComponent(itemName)
+            let itemURL = URL(fileURLWithPath: itemPath)
             let relPath = relativePath(from: sourceURL, to: itemURL)
 
             // Skip _versions
@@ -1169,30 +1170,33 @@ final class BackupEngine {
                 continue
             }
 
-            // Get prefetched resource values (should not block)
-            let resourceValues = try? itemURL.resourceValues(forKeys: resourceKeys)
-            let isDirectory = resourceValues?.isDirectory ?? false
-            let fileSize = resourceValues?.fileSize ?? 0
+            // Use stat() directly - faster than FileManager and doesn't trigger cloud downloads
+            var statInfo = stat()
+            let statResult = stat(itemPath, &statInfo)
 
-            // Check if item is cloud-only (ubiquitous item not downloaded)
-            let isUbiquitous = resourceValues?.isUbiquitousItem ?? false
-            var isCloudOnly = false
+            if statResult == 0 {
+                // Item exists locally
+                let isDirectory = (statInfo.st_mode & S_IFMT) == S_IFDIR
+                let fileSize = Int64(statInfo.st_size)
 
-            if isUbiquitous {
-                // Check download status
-                if let downloadStatus = resourceValues?.ubiquitousItemDownloadingStatus {
-                    // notDownloaded means it's cloud-only
-                    isCloudOnly = (downloadStatus == .notDownloaded)
+                if isDirectory {
+                    results.append((itemURL, relPath, true, false, 0))
                 } else {
-                    // If we can't get status, assume cloud-only if size is 0
-                    isCloudOnly = (fileSize == 0)
+                    // File exists locally - check if it's a placeholder (size 0 in CloudStorage)
+                    let isCloudOnly = (isInCloudStorage && fileSize == 0)
+                    results.append((itemURL, relPath, false, isCloudOnly, fileSize))
                 }
-            }
-
-            if isDirectory {
-                results.append((itemURL, relPath, true, isCloudOnly, 0))
             } else {
-                results.append((itemURL, relPath, false, isCloudOnly, Int64(fileSize)))
+                // Item listed but stat failed - likely cloud-only (not downloaded)
+                // Use extension heuristic to determine if directory or file
+                let pathExtension = (itemName as NSString).pathExtension
+                let isLikelyDirectory = pathExtension.isEmpty
+
+                if isLikelyDirectory {
+                    results.append((itemURL, relPath, true, true, 0))
+                } else {
+                    results.append((itemURL, relPath, false, true, 0))
+                }
             }
         }
 
