@@ -11,6 +11,9 @@ struct SyncState: Equatable {
     /// Whether the backup is paused by the user.
     var isPaused: Bool = false
 
+    /// Whether the backup should be cancelled (e.g., drive ejected).
+    var shouldCancel: Bool = false
+
     /// Whether changes are queued for backup once the destination connects.
     var pendingBackup: Bool = false
 
@@ -32,6 +35,7 @@ struct SyncState: Equatable {
     mutating func resetAfterBackup() {
         isBacking = false
         isPaused = false
+        shouldCancel = false
         pendingBackup = false
         pendingRemoteChanges = nil
         pausedProgress = nil
@@ -46,6 +50,12 @@ struct SyncState: Equatable {
     /// Resume a paused backup.
     mutating func resume() {
         isPaused = false
+    }
+
+    /// Request cancellation of the current backup.
+    mutating func cancel() {
+        shouldCancel = true
+        isPaused = false  // Unpause so the backup loop can exit
     }
 }
 

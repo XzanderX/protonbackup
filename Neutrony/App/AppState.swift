@@ -266,6 +266,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Cancel the current backup (e.g., when drive is ejected).
+    func cancelBackup() {
+        guard syncState.isLocked else { return }
+
+        syncState.cancel()
+        logService.log(.info, category: .backup, message: "Backup cancelled (drive ejected)")
+
+        // Clear badges
+        badgeService.clearAllBadges()
+    }
+
     /// Backup from Proton Drive folder to external destination.
     /// Uses hybrid approach (rclone + local optimization) when rclone is configured.
     private func performBackup(to destPath: String) async {
@@ -293,7 +304,7 @@ final class AppState: ObservableObject {
                     deletionPolicy: config.deletionPolicy,
                     keepVersions: config.keepVersions,
                     pauseChecker: { [weak self] in
-                        self?.syncState.isPaused ?? false
+                        (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                     }
                 ) { [weak self] progress in
                     Task { @MainActor in
@@ -324,7 +335,7 @@ final class AppState: ObservableObject {
                         keepVersions: config.keepVersions,
                         offloadAfterBackup: config.offloadAfterBackup,
                         pauseChecker: { [weak self] in
-                            self?.syncState.isPaused ?? false
+                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
                     ) { [weak self] progress in
                         Task { @MainActor in
@@ -345,7 +356,7 @@ final class AppState: ObservableObject {
                         keepVersions: config.keepVersions,
                         requireSync: true,
                         pauseChecker: { [weak self] in
-                            self?.syncState.isPaused ?? false
+                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
                     ) { [weak self] progress in
                         Task { @MainActor in
@@ -365,7 +376,7 @@ final class AppState: ObservableObject {
                         deletionPolicy: config.deletionPolicy,
                         keepVersions: config.keepVersions,
                         pauseChecker: { [weak self] in
-                            self?.syncState.isPaused ?? false
+                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
                     ) { [weak self] progress in
                         Task { @MainActor in
@@ -410,12 +421,20 @@ final class AppState: ObservableObject {
             }
 
             lastSummary = summary
+
+            // Check if backup was cancelled (drive ejected)
+            let wasCancelled = syncState.shouldCancel
             syncState.resetAfterBackup()
 
-            backupState = .upToDate
-            logService.log(.info, category: .app, message: "Backup complete: \(summary.displayText)")
+            if wasCancelled {
+                backupState = .destinationDisconnected
+                logService.log(.info, category: .app, message: "Backup cancelled due to drive ejection")
+            } else {
+                backupState = .upToDate
+                logService.log(.info, category: .app, message: "Backup complete: \(summary.displayText)")
+            }
 
-            if config.notificationsEnabled {
+            if config.notificationsEnabled && !wasCancelled {
                 if summary.succeeded {
                     notificationService.notifyBackupComplete(summary: summary)
                 } else {
@@ -485,6 +504,14 @@ final class AppState: ObservableObject {
         driveMonitor.onDestinationDisconnected = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
+
+                // Cancel any running backup when drive is ejected
+                if self.syncState.isLocked {
+                    self.logService.log(.info, category: .driveMonitor,
+                                        message: "Backup destination ejected, cancelling backup...")
+                    self.cancelBackup()
+                }
+
                 self.checkDestinationAvailability()
             }
         }
