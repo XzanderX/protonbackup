@@ -676,6 +676,7 @@ final class BackupEngine {
             }
 
             // Create placeholders and categorize files
+            var pendingPaths: [String] = []
             for (destFilePath, relPath, isCloudOnly, sourceURL) in placeholdersToCreate {
                 // Create parent folder if not already created
                 let destParent = (destFilePath as NSString).deletingLastPathComponent
@@ -688,6 +689,7 @@ final class BackupEngine {
                 if !fm.fileExists(atPath: destFilePath) {
                     fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
                     placeholdersCreated += 1
+                    pendingPaths.append(relPath)
                 }
 
                 // Categorize for later phases
@@ -696,6 +698,11 @@ final class BackupEngine {
                 } else {
                     localFilesToBackup.append((sourceURL, relPath))
                 }
+            }
+
+            // Mark newly created placeholders as pending
+            if !pendingPaths.isEmpty {
+                badgeService.markFilesPending(relativePaths: pendingPaths)
             }
 
             // Clear the pending items (keep foldersAlreadyCreated for reference)

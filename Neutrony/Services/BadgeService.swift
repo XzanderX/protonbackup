@@ -42,6 +42,9 @@ final class BadgeService {
     func backupStarted(destinationPath: String) {
         activeDestination = destinationPath
 
+        // Clear any stale badges from previous interrupted backups
+        badgeManager.clearAllBadges()
+
         // Set syncing badge on the destination root
         badgeManager.setBadge(.syncing, for: destinationPath)
         logService.log(.debug, category: .backup, message: "Badge: backup started")
