@@ -45,8 +45,8 @@ final class BadgeService {
         // Clear any stale badges from previous interrupted backups
         badgeManager.clearAllBadges()
 
-        // Set syncing badge on the destination root
-        badgeManager.setBadge(.syncing, for: destinationPath)
+        // Don't set a badge on the root folder - it would propagate to all children
+        // Individual files will get badges as they're processed
         logService.log(.debug, category: .backup, message: "Badge: backup started")
     }
 
