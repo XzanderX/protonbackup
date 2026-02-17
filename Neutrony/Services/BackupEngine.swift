@@ -480,12 +480,73 @@ final class BackupEngine {
         var localFilesToBackup: [(url: URL, relPath: String)] = []
         var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
         var foldersToCreate: Set<String> = []
+        var foldersAlreadyCreated: Set<String> = []  // Track what we've already flushed
         var placeholdersToCreate: [(destPath: String, relPath: String, isCloudOnly: Bool, sourceURL: URL)] = []
+        var totalFilesFound = 0
 
-        // Fast sequential scan using a queue (no file creation during scan)
+        // Helper function to flush collected folders and placeholders to disk
+        // This allows us to make progress even while scanning continues
+        func flushPendingItems() async {
+            guard !foldersToCreate.isEmpty || !placeholdersToCreate.isEmpty else { return }
+
+            let foldersThisBatch = foldersToCreate.count
+            let filesThisBatch = placeholdersToCreate.count
+
+            logService.log(.info, category: .backup,
+                           message: "Flushing batch: \(foldersThisBatch) folders, \(filesThisBatch) files")
+
+            // Create folders
+            let sortedFolders = foldersToCreate.sorted()
+            for folderPath in sortedFolders {
+                if !foldersAlreadyCreated.contains(folderPath) {
+                    try? fm.createDirectory(atPath: folderPath, withIntermediateDirectories: true, attributes: nil)
+                    foldersAlreadyCreated.insert(folderPath)
+                    foldersCreated += 1
+                }
+            }
+
+            // Create placeholders and categorize files
+            for (destFilePath, relPath, isCloudOnly, sourceURL) in placeholdersToCreate {
+                // Create parent folder if not already created
+                let destParent = (destFilePath as NSString).deletingLastPathComponent
+                if !foldersAlreadyCreated.contains(destParent) {
+                    try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
+                    foldersAlreadyCreated.insert(destParent)
+                }
+
+                // Create placeholder if doesn't exist
+                if !fm.fileExists(atPath: destFilePath) {
+                    fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
+                    placeholdersCreated += 1
+                }
+
+                // Categorize for later phases
+                if isCloudOnly {
+                    cloudOnlyFilesToBackup.append((sourceURL, relPath, nil))
+                } else {
+                    localFilesToBackup.append((sourceURL, relPath))
+                }
+            }
+
+            // Clear the pending items (keep foldersAlreadyCreated for reference)
+            foldersToCreate.removeAll()
+            placeholdersToCreate.removeAll()
+
+            // Update progress
+            let progress = BackupProgress(
+                totalFiles: totalFilesFound,
+                completedFiles: placeholdersCreated,
+                currentFileName: "Creating file structure..."
+            )
+            progressHandler(progress)
+
+            await Task.yield()
+        }
+
+        // Fast sequential scan using a queue with incremental flushing
         var directoryQueue: [URL] = [sourceURL]
         var directoriesScanned = 0
-        var slowDirectories: [String] = []
+        let flushThreshold = 2000  // Flush every 2000 files
 
         while !directoryQueue.isEmpty {
             let directory = directoryQueue.removeFirst()
@@ -495,12 +556,12 @@ final class BackupEngine {
             if directoriesScanned % 50 == 0 {
                 await Task.yield()
                 logService.log(.debug, category: .backup,
-                               message: "Scanned \(directoriesScanned) directories, found \(placeholdersToCreate.count) files...")
+                               message: "Scanned \(directoriesScanned) directories, found \(totalFilesFound) files...")
                 // Update UI during scan so it doesn't appear stuck
                 let scanProgress = BackupProgress(
                     totalFiles: 0,
-                    completedFiles: 0,
-                    currentFileName: "Scanning: \(placeholdersToCreate.count) files found..."
+                    completedFiles: placeholdersCreated,
+                    currentFileName: "Scanning: \(totalFilesFound) files found..."
                 )
                 progressHandler(scanProgress)
             }
@@ -512,12 +573,12 @@ final class BackupEngine {
             }
             let scanDuration = Date().timeIntervalSince(scanStart)
 
-            // Log directories that take more than 2 seconds
+            // If we hit a slow directory, flush pending items first so user sees progress
             if scanDuration > 2.0 {
                 let relPath = relativePath(from: sourceURL, to: directory)
-                slowDirectories.append(relPath)
                 logService.log(.warning, category: .backup,
                                message: "Slow directory (\(String(format: "%.1f", scanDuration))s): \(relPath)")
+                await flushPendingItems()
             }
 
             for item in items {
@@ -527,7 +588,9 @@ final class BackupEngine {
 
                     // Collect folder to create
                     let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
-                    foldersToCreate.insert(destDirPath)
+                    if !foldersAlreadyCreated.contains(destDirPath) {
+                        foldersToCreate.insert(destDirPath)
+                    }
                 } else {
                     // It's a file - check if needs backup
                     let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
@@ -546,6 +609,7 @@ final class BackupEngine {
 
                     if needsBackup {
                         placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
+                        totalFilesFound += 1
                     } else {
                         filesSkipped += 1
                         // Log first few skipped files for debugging
@@ -557,65 +621,24 @@ final class BackupEngine {
                     }
                 }
             }
+
+            // Flush periodically based on file count
+            if placeholdersToCreate.count >= flushThreshold {
+                logService.log(.info, category: .backup,
+                               message: "Reached \(flushThreshold) files, flushing to disk...")
+                await flushPendingItems()
+            }
         }
+
+        // Final flush for any remaining items
+        logService.log(.info, category: .backup,
+                       message: "Scan complete: \(totalFilesFound) files to process, \(filesSkipped) skipped")
+        await flushPendingItems()
 
         logService.log(.info, category: .backup,
-                       message: "Scan complete: \(foldersToCreate.count) folders, \(placeholdersToCreate.count) files to process, \(filesSkipped) skipped")
+                       message: "Phase 0 complete: \(foldersCreated) folders, \(placeholdersCreated) placeholders created")
 
-        // Batch create all folders at once (much faster than one-by-one)
-        let sortedFolders = foldersToCreate.sorted()
-        let totalFolders = sortedFolders.count
-        for (index, folderPath) in sortedFolders.enumerated() {
-            try? fm.createDirectory(atPath: folderPath, withIntermediateDirectories: true, attributes: nil)
-            foldersCreated += 1
-
-            // Log progress every 500 folders
-            if (index + 1) % 500 == 0 {
-                await Task.yield()
-                logService.log(.debug, category: .backup, message: "Creating folders: \(index + 1)/\(totalFolders)")
-            }
-        }
-        logService.log(.info, category: .backup, message: "Created \(foldersCreated) folders")
-
-        // Batch create placeholders and categorize files
-        let totalPlaceholders = placeholdersToCreate.count
-        var placeholderIndex = 0
-        for (destFilePath, relPath, isCloudOnly, sourceURL) in placeholdersToCreate {
-            placeholderIndex += 1
-
-            // Create parent folder if not already created
-            let destParent = (destFilePath as NSString).deletingLastPathComponent
-            if !foldersToCreate.contains(destParent) {
-                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
-            }
-
-            // Create placeholder if doesn't exist
-            if !fm.fileExists(atPath: destFilePath) {
-                fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
-                placeholdersCreated += 1
-            }
-
-            // Categorize for later phases
-            if isCloudOnly {
-                cloudOnlyFilesToBackup.append((sourceURL, relPath, nil))
-            } else {
-                localFilesToBackup.append((sourceURL, relPath))
-            }
-
-            // Log progress every 1000 files
-            if placeholderIndex % 1000 == 0 {
-                await Task.yield()
-                logService.log(.debug, category: .backup, message: "Creating placeholders: \(placeholderIndex)/\(totalPlaceholders)")
-                let scanProgress = BackupProgress(
-                    totalFiles: totalPlaceholders,
-                    completedFiles: placeholderIndex,
-                    currentFileName: "Creating file structure..."
-                )
-                progressHandler(scanProgress)
-            }
-        }
-
-        // Update progress once after structure creation
+        // Update progress after structure creation
         let structureProgress = BackupProgress(
             totalFiles: placeholdersCreated,
             completedFiles: 0,
@@ -623,8 +646,6 @@ final class BackupEngine {
         )
         progressHandler(structureProgress)
 
-        logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated) folders, \(placeholdersCreated) placeholders created")
         logService.log(.info, category: .backup,
                        message: "Files to process: \(localFilesToBackup.count) local, \(cloudOnlyFilesToBackup.count) cloud-only")
 
