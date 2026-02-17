@@ -552,14 +552,25 @@ final class BackupEngine {
 
         // Batch create all folders at once (much faster than one-by-one)
         let sortedFolders = foldersToCreate.sorted()
-        for folderPath in sortedFolders {
+        let totalFolders = sortedFolders.count
+        for (index, folderPath) in sortedFolders.enumerated() {
             try? fm.createDirectory(atPath: folderPath, withIntermediateDirectories: true, attributes: nil)
             foldersCreated += 1
+
+            // Log progress every 500 folders
+            if (index + 1) % 500 == 0 {
+                await Task.yield()
+                logService.log(.debug, category: .backup, message: "Creating folders: \(index + 1)/\(totalFolders)")
+            }
         }
         logService.log(.info, category: .backup, message: "Created \(foldersCreated) folders")
 
         // Batch create placeholders and categorize files
+        let totalPlaceholders = placeholdersToCreate.count
+        var placeholderIndex = 0
         for (destFilePath, relPath, isCloudOnly, sourceURL) in placeholdersToCreate {
+            placeholderIndex += 1
+
             // Create parent folder if not already created
             let destParent = (destFilePath as NSString).deletingLastPathComponent
             if !foldersToCreate.contains(destParent) {
@@ -577,6 +588,18 @@ final class BackupEngine {
                 cloudOnlyFilesToBackup.append((sourceURL, relPath, nil))
             } else {
                 localFilesToBackup.append((sourceURL, relPath))
+            }
+
+            // Log progress every 1000 files
+            if placeholderIndex % 1000 == 0 {
+                await Task.yield()
+                logService.log(.debug, category: .backup, message: "Creating placeholders: \(placeholderIndex)/\(totalPlaceholders)")
+                let scanProgress = BackupProgress(
+                    totalFiles: totalPlaceholders,
+                    completedFiles: placeholderIndex,
+                    currentFileName: "Creating file structure..."
+                )
+                progressHandler(scanProgress)
             }
         }
 
@@ -1134,7 +1157,18 @@ final class BackupEngine {
                 results.append((itemURL, relPath, true, false, 0))
             } else if !exists {
                 // Item listed but doesn't exist locally - cloud-only
-                if let _ = try? fm.contentsOfDirectory(atPath: itemURL.path) {
+                // Try to get resource values (uses cached metadata, shouldn't trigger download)
+                var isCloudDir = false
+                if let resourceValues = try? itemURL.resourceValues(forKeys: [.isDirectoryKey]),
+                   let isDir = resourceValues.isDirectory {
+                    isCloudDir = isDir
+                } else {
+                    // Fallback: check if name has no file extension (likely a directory)
+                    let pathExtension = (itemName as NSString).pathExtension
+                    isCloudDir = pathExtension.isEmpty
+                }
+
+                if isCloudDir {
                     // It's a cloud-only directory
                     results.append((itemURL, relPath, true, true, 0))
                 } else {
