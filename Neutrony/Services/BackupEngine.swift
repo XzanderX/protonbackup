@@ -458,13 +458,17 @@ final class BackupEngine {
         // Get existing destination files for comparison
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
         var destFileSizes: [String: Int64] = [:]
+        var zeroByteCount = 0
         for destFile in destFiles {
             let relPath = relativePath(from: destURL, to: destFile)
             if let attrs = try? fm.attributesOfItem(atPath: destFile.path),
                let size = attrs[.size] as? Int64 {
                 destFileSizes[relPath] = size
+                if size == 0 { zeroByteCount += 1 }
             }
         }
+        logService.log(.info, category: .backup,
+                       message: "Destination has \(destFiles.count) files (\(zeroByteCount) are 0-byte placeholders)")
 
         // ============================================
         // PHASE 0: Fast sequential scan with batched structure creation
@@ -532,13 +536,19 @@ final class BackupEngine {
                         placeholdersToCreate.append((destFilePath, item.relPath, item.isCloudOnly, item.item))
                     } else {
                         filesSkipped += 1
+                        // Log first few skipped files for debugging
+                        if filesSkipped <= 3 {
+                            let existingSize = destFileSizes[item.relPath] ?? -1
+                            logService.log(.debug, category: .backup,
+                                           message: "Skipped (size match): \(item.relPath) local=\(item.localSize) dest=\(existingSize)")
+                        }
                     }
                 }
             }
         }
 
         logService.log(.info, category: .backup,
-                       message: "Scan complete: \(foldersToCreate.count) folders, \(placeholdersToCreate.count) files to process")
+                       message: "Scan complete: \(foldersToCreate.count) folders, \(placeholdersToCreate.count) files to process, \(filesSkipped) skipped")
 
         // Batch create all folders at once (much faster than one-by-one)
         let sortedFolders = foldersToCreate.sorted()
