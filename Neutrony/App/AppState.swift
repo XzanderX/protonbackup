@@ -72,6 +72,10 @@ final class AppState: ObservableObject {
 
         WindowManager.shared.closeWindow(id: "setup-wizard")
         startOperations()
+
+        // Automatically start the first backup
+        logService.log(.info, category: .app, message: "Setup complete, starting initial backup...")
+        runNow()
     }
 
     /// Save current configuration to disk.
