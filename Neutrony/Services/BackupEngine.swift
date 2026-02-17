@@ -485,6 +485,7 @@ final class BackupEngine {
         // Fast sequential scan using a queue (no file creation during scan)
         var directoryQueue: [URL] = [sourceURL]
         var directoriesScanned = 0
+        var slowDirectories: [String] = []
 
         while !directoryQueue.isEmpty {
             let directory = directoryQueue.removeFirst()
@@ -504,8 +505,19 @@ final class BackupEngine {
                 progressHandler(scanProgress)
             }
 
+            // Track how long each directory takes to scan
+            let scanStart = Date()
             guard let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) else {
                 continue
+            }
+            let scanDuration = Date().timeIntervalSince(scanStart)
+
+            // Log directories that take more than 2 seconds
+            if scanDuration > 2.0 {
+                let relPath = relativePath(from: sourceURL, to: directory)
+                slowDirectories.append(relPath)
+                logService.log(.warning, category: .backup,
+                               message: "Slow directory (\(String(format: "%.1f", scanDuration))s): \(relPath)")
             }
 
             for item in items {
