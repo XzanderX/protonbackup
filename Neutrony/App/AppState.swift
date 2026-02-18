@@ -13,6 +13,13 @@ final class AppState: ObservableObject {
     @Published var lastSummary: BackupSummary?
     @Published var isDestinationConnected: Bool = false
     @Published var destinationPath: String?
+    @Published var recentFileActivities: [FileActivity] = []
+
+    /// Maximum number of recent file activities to display
+    private let maxRecentActivities = 10
+
+    /// Track the previous file being processed for activity updates
+    private var lastProcessedFile: String?
 
     // MARK: - Services
 
@@ -287,6 +294,9 @@ final class AppState: ObservableObject {
         syncState.isBacking = true
         logService.log(.info, category: .backup, message: "Backup lock acquired, onDemandDownload=\(config.onDemandDownload)")
 
+        // Clear previous file activities when starting a new backup
+        clearFileActivities()
+
         backupState = .backing(progress: BackupProgress(
             totalFiles: 0, completedFiles: 0, currentFileName: "Starting backup…"
         ))
@@ -308,12 +318,7 @@ final class AppState: ObservableObject {
                     }
                 ) { [weak self] progress in
                     Task { @MainActor in
-                        guard let self else { return }
-                        if self.syncState.isPaused {
-                            self.backupState = .paused(progress: progress)
-                        } else {
-                            self.backupState = .backing(progress: progress)
-                        }
+                        self?.handleBackupProgress(progress, sourcePath: localFolderPath)
                     }
                 }
             } else {
@@ -337,14 +342,9 @@ final class AppState: ObservableObject {
                         pauseChecker: { [weak self] in
                             (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
-                    ) { [weak self] progress in
+                    ) { [weak self, sourcePath] progress in
                         Task { @MainActor in
-                            guard let self else { return }
-                            if self.syncState.isPaused {
-                                self.backupState = .paused(progress: progress)
-                            } else {
-                                self.backupState = .backing(progress: progress)
-                            }
+                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
                         }
                     }
                 } else if config.requireCloudSync {
@@ -358,14 +358,9 @@ final class AppState: ObservableObject {
                         pauseChecker: { [weak self] in
                             (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
-                    ) { [weak self] progress in
+                    ) { [weak self, sourcePath] progress in
                         Task { @MainActor in
-                            guard let self else { return }
-                            if self.syncState.isPaused {
-                                self.backupState = .paused(progress: progress)
-                            } else {
-                                self.backupState = .backing(progress: progress)
-                            }
+                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
                         }
                     }
                 } else {
@@ -378,14 +373,9 @@ final class AppState: ObservableObject {
                         pauseChecker: { [weak self] in
                             (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
                         }
-                    ) { [weak self] progress in
+                    ) { [weak self, sourcePath] progress in
                         Task { @MainActor in
-                            guard let self else { return }
-                            if self.syncState.isPaused {
-                                self.backupState = .paused(progress: progress)
-                            } else {
-                                self.backupState = .backing(progress: progress)
-                            }
+                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
                         }
                     }
                 }
@@ -421,6 +411,9 @@ final class AppState: ObservableObject {
             }
 
             lastSummary = summary
+
+            // Mark all copying activities as completed
+            finalizeFileActivities()
 
             // Check if backup was cancelled (drive ejected)
             let wasCancelled = syncState.shouldCancel
@@ -592,6 +585,96 @@ final class AppState: ObservableObject {
         config.pollingIntervalMinutes = minutes
         saveConfig()
         startPollingTimer()
+    }
+
+    // MARK: - File Activity Tracking
+
+    /// Add a file activity to the recent list.
+    func addFileActivity(_ activity: FileActivity) {
+        recentFileActivities.insert(activity, at: 0)
+        if recentFileActivities.count > maxRecentActivities {
+            recentFileActivities.removeLast()
+        }
+    }
+
+    /// Update the status of an existing file activity (e.g., copying → copied).
+    func updateFileActivity(fileName: String, folderPath: String, status: FileActivityStatus) {
+        if let index = recentFileActivities.firstIndex(where: {
+            $0.fileName == fileName && $0.folderPath == folderPath
+        }) {
+            let old = recentFileActivities[index]
+            recentFileActivities[index] = FileActivity(
+                fileName: old.fileName,
+                folderPath: old.folderPath,
+                status: status
+            )
+        }
+    }
+
+    /// Clear all recent file activities.
+    func clearFileActivities() {
+        recentFileActivities.removeAll()
+        lastProcessedFile = nil
+    }
+
+    /// Handle progress update and track file activities.
+    /// Call this from backup progress handlers to automatically track file operations.
+    func handleBackupProgress(_ progress: BackupProgress, sourcePath: String?) {
+        // Update backup state
+        if syncState.isPaused {
+            backupState = .paused(progress: progress)
+        } else {
+            backupState = .backing(progress: progress)
+        }
+
+        // Track file activity
+        guard let currentFile = progress.currentFileName else { return }
+
+        // If we moved to a new file, mark the previous one as copied
+        if let lastFile = lastProcessedFile, lastFile != currentFile {
+            let (lastName, lastFolder) = splitFilePath(lastFile, basePath: sourcePath)
+            updateFileActivity(fileName: lastName, folderPath: lastFolder, status: .copied)
+        }
+
+        // Add new file as copying (if not already tracked)
+        if currentFile != lastProcessedFile {
+            let (fileName, folderPath) = splitFilePath(currentFile, basePath: sourcePath)
+            addFileActivity(FileActivity(
+                fileName: fileName,
+                folderPath: folderPath,
+                status: .copying
+            ))
+            lastProcessedFile = currentFile
+        }
+    }
+
+    /// Split a relative file path into file name and folder path.
+    private func splitFilePath(_ relPath: String, basePath: String?) -> (fileName: String, folderPath: String) {
+        let nsPath = relPath as NSString
+        let fileName = nsPath.lastPathComponent
+        let relFolder = nsPath.deletingLastPathComponent
+
+        // If we have a base path, construct full folder path
+        if let base = basePath {
+            let fullFolder = relFolder.isEmpty ? base : (base as NSString).appendingPathComponent(relFolder)
+            return (fileName, fullFolder)
+        }
+
+        return (fileName, relFolder.isEmpty ? "/" : relFolder)
+    }
+
+    /// Mark all "copying" activities as "copied" when backup completes.
+    func finalizeFileActivities() {
+        for (index, activity) in recentFileActivities.enumerated() {
+            if case .copying = activity.status {
+                recentFileActivities[index] = FileActivity(
+                    fileName: activity.fileName,
+                    folderPath: activity.folderPath,
+                    status: .copied
+                )
+            }
+        }
+        lastProcessedFile = nil
     }
 
     // MARK: - Account management

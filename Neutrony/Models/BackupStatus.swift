@@ -100,6 +100,64 @@ struct BackupProgress: Equatable {
     }
 }
 
+/// Represents a recent file operation for display in the activity list.
+struct FileActivity: Identifiable, Equatable {
+    let id: UUID
+    let fileName: String
+    let folderPath: String
+    let status: FileActivityStatus
+    let timestamp: Date
+
+    init(fileName: String, folderPath: String, status: FileActivityStatus) {
+        self.id = UUID()
+        self.fileName = fileName
+        self.folderPath = folderPath
+        self.status = status
+        self.timestamp = Date()
+    }
+
+    /// Display-friendly folder name (last component of path)
+    var folderName: String {
+        (folderPath as NSString).lastPathComponent
+    }
+
+    /// Full path to the file
+    var fullPath: String {
+        (folderPath as NSString).appendingPathComponent(fileName)
+    }
+
+    var relativeTime: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: timestamp, relativeTo: Date())
+    }
+}
+
+enum FileActivityStatus: Equatable {
+    case copying
+    case copied
+    case skipped
+    case error(String)
+
+    var displayText: String {
+        switch self {
+        case .copying: return "Copying…"
+        case .copied: return "Copied"
+        case .skipped: return "Skipped"
+        case .error(let msg): return "Error: \(msg)"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .copying: return "arrow.right.circle"
+        case .copied: return "checkmark.circle.fill"
+        case .skipped: return "arrow.uturn.right.circle"
+        case .error: return "exclamationmark.circle.fill"
+        }
+    }
+}
+
 /// Summary produced after a backup run completes.
 struct BackupSummary: Equatable {
     var filesUpdated: Int

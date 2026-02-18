@@ -10,6 +10,13 @@ struct MenuBarView: View {
             StatusHeaderView()
                 .environmentObject(appState)
 
+            // File activity list (shown when backup is running or has recent activity)
+            if appState.backupState.isRunning || !appState.recentFileActivities.isEmpty {
+                Divider()
+                FileActivityListView()
+                    .environmentObject(appState)
+            }
+
             Divider()
 
             // Quick actions
@@ -113,25 +120,11 @@ struct StatusHeaderView: View {
             if case .syncing(let progress) = appState.backupState {
                 ProgressView(value: progress.fraction)
                     .tint(.protonPurple)
-                if let fileName = progress.currentFileName {
-                    Text(fileName)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
 
             if case .backing(let progress) = appState.backupState {
                 ProgressView(value: progress.fraction)
                     .tint(.protonPurple)
-                if let fileName = progress.currentFileName {
-                    Text(fileName)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
 
             if case .paused(let progress) = appState.backupState {
