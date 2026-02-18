@@ -66,65 +66,74 @@ struct FileActivityListView: View {
     }
 }
 
-/// A single row in the file activity list.
+/// A single row in the file activity list - Proton Drive style.
+/// Shows: thumbnail, file name, status with size and clickable folder link.
 struct FileActivityRow: View {
     let activity: FileActivity
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            // File type icon
-            fileIcon
-                .frame(width: 32, height: 32)
+        HStack(alignment: .center, spacing: 12) {
+            // File thumbnail placeholder
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.secondary.opacity(0.1))
+                    .frame(width: 40, height: 40)
+
+                Image(systemName: "doc.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary.opacity(0.6))
+            }
 
             // File info
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
+                // File name - prominent
                 Text(activity.fileName)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
+                // Status with size and folder link
                 HStack(spacing: 0) {
                     Text(statusText)
-                        .font(.system(size: 10))
-                        .foregroundColor(statusColor)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
 
                     if let size = activity.formattedSize {
                         Text(" | ")
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.5))
                         Text(size)
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
+
+                    Text(" • ")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.5))
+
+                    // Clickable folder link
+                    Button {
+                        openFolderInFinder()
+                    } label: {
+                        Text(activity.folderName)
+                            .font(.system(size: 11))
+                            .foregroundColor(.protonPurple)
+                            .underline()
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
             Spacer()
 
-            // Status indicator
+            // Status indicator on the right
             statusIndicator
                 .frame(width: 20, height: 20)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
-        .onTapGesture {
-            openDestinationInFinder()
-        }
-    }
-
-    // MARK: - File Icon
-
-    @ViewBuilder
-    private var fileIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.secondary.opacity(0.1))
-
-            Image(systemName: "doc.fill")
-                .font(.system(size: 14))
-                .foregroundColor(.secondary)
-        }
     }
 
     // MARK: - Status
@@ -142,19 +151,6 @@ struct FileActivityRow: View {
         }
     }
 
-    private var statusColor: Color {
-        switch activity.status {
-        case .copying:
-            return .protonPurple
-        case .copied:
-            return .secondary
-        case .skipped:
-            return .secondary
-        case .error:
-            return .statusRed
-        }
-    }
-
     @ViewBuilder
     private var statusIndicator: some View {
         switch activity.status {
@@ -167,9 +163,7 @@ struct FileActivityRow: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
         case .skipped:
-            Image(systemName: "minus")
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
+            EmptyView()
         case .error:
             Image(systemName: "exclamationmark")
                 .font(.system(size: 12, weight: .semibold))
@@ -179,14 +173,8 @@ struct FileActivityRow: View {
 
     // MARK: - Actions
 
-    private func openDestinationInFinder() {
+    private func openFolderInFinder() {
         let folderURL = URL(fileURLWithPath: activity.destinationFolder)
-        let fileURL = URL(fileURLWithPath: activity.fullPath)
-
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            NSWorkspace.shared.selectFile(fileURL.path, inFileViewerRootedAtPath: folderURL.path)
-        } else {
-            NSWorkspace.shared.open(folderURL)
-        }
+        NSWorkspace.shared.open(folderURL)
     }
 }

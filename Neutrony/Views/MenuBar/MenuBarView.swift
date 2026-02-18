@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Proton Drive-style menu bar dropdown.
-/// Minimal design: header with settings, file list, status bar, action toolbar.
+/// Minimal design: header with settings gear, file list, status bar.
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
 
@@ -20,12 +20,6 @@ struct MenuBarView: View {
             // Status bar
             StatusBarView()
                 .environmentObject(appState)
-
-            Divider()
-
-            // Bottom toolbar
-            ToolbarView()
-                .environmentObject(appState)
         }
         .frame(width: 340)
     }
@@ -35,7 +29,6 @@ struct MenuBarView: View {
 
 struct HeaderView: View {
     @EnvironmentObject var appState: AppState
-    @State private var showingMenu = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -71,6 +64,7 @@ struct HeaderView: View {
 
             // Settings gear menu
             Menu {
+                // Backup actions
                 if appState.backupState.isRunning {
                     Button {
                         appState.pauseBackup()
@@ -83,8 +77,32 @@ struct HeaderView: View {
                     } label: {
                         Label("Resume Backup", systemImage: "play")
                     }
+                } else if appState.config.setupCompleted && appState.isDestinationConnected {
+                    Button {
+                        appState.runNow()
+                    } label: {
+                        Label("Back Up Now", systemImage: "arrow.clockwise")
+                    }
                 }
 
+                Divider()
+
+                // Open destination folder
+                Button {
+                    openDestinationFolder()
+                } label: {
+                    Label("Open Backup Folder", systemImage: "folder")
+                }
+                .disabled(!appState.isDestinationConnected)
+
+                // View log
+                Button {
+                    WindowManager.shared.showLogViewer()
+                } label: {
+                    Label("View Log", systemImage: "doc.text")
+                }
+
+                // Settings
                 Button {
                     WindowManager.shared.showSettings()
                 } label: {
@@ -93,10 +111,11 @@ struct HeaderView: View {
 
                 Divider()
 
+                // Quit
                 Button {
                     NSApplication.shared.terminate(nil)
                 } label: {
-                    Label("Quit", systemImage: "power")
+                    Label("Quit Neutrony", systemImage: "power")
                 }
             } label: {
                 Image(systemName: "gearshape")
@@ -118,6 +137,12 @@ struct HeaderView: View {
             return "Last backup \(lastBackup.relativeString)"
         }
         return "Ready"
+    }
+
+    private func openDestinationFolder() {
+        if let path = appState.destinationPath {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        }
     }
 }
 
@@ -199,105 +224,5 @@ struct StatusBarView: View {
         case .notConfigured:
             return "Setup required"
         }
-    }
-}
-
-// MARK: - Toolbar View
-
-struct ToolbarView: View {
-    @EnvironmentObject var appState: AppState
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // Open folder button
-            ToolbarButton(
-                icon: "folder",
-                label: "Open folder",
-                action: openDestinationFolder
-            )
-            .disabled(!appState.isDestinationConnected)
-
-            Divider()
-                .frame(height: 30)
-
-            // Back up now button
-            ToolbarButton(
-                icon: backupButtonIcon,
-                label: backupButtonLabel,
-                action: handleBackupAction
-            )
-            .disabled(!appState.config.setupCompleted || !appState.isDestinationConnected)
-
-            Divider()
-                .frame(height: 30)
-
-            // View log button
-            ToolbarButton(
-                icon: "doc.text",
-                label: "View log",
-                action: { WindowManager.shared.showLogViewer() }
-            )
-        }
-        .padding(.vertical, 8)
-    }
-
-    private var backupButtonIcon: String {
-        if appState.backupState.isRunning {
-            return "pause"
-        } else if appState.backupState.isPaused {
-            return "play"
-        } else {
-            return "arrow.clockwise"
-        }
-    }
-
-    private var backupButtonLabel: String {
-        if appState.backupState.isRunning {
-            return "Pause"
-        } else if appState.backupState.isPaused {
-            return "Resume"
-        } else {
-            return "Back up"
-        }
-    }
-
-    private func handleBackupAction() {
-        if appState.backupState.isRunning {
-            appState.pauseBackup()
-        } else if appState.backupState.isPaused {
-            appState.resumeBackup()
-        } else {
-            appState.runNow()
-        }
-    }
-
-    private func openDestinationFolder() {
-        if let path = appState.destinationPath {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
-        }
-    }
-}
-
-// MARK: - Toolbar Button
-
-struct ToolbarButton: View {
-    let icon: String
-    let label: String
-    let action: () -> Void
-
-    @Environment(\.isEnabled) private var isEnabled
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                Text(label)
-                    .font(.system(size: 10))
-            }
-            .foregroundColor(isEnabled ? .primary : .secondary.opacity(0.5))
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
     }
 }
