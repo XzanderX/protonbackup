@@ -253,6 +253,40 @@ actor FileCopyQueue {
     }
 }
 
+/// Thread-safe tracker for shared mutable state during concurrent scan + copy
+actor ConcurrentBackupTracker {
+    private(set) var foldersAlreadyCreated: Set<String> = []
+    private(set) var foldersCreated: Int = 0
+    private(set) var filesUpdated: Int = 0
+    private(set) var errors: [String] = []
+
+    func createFolderIfNeeded(_ path: String, using fm: FileManager) {
+        guard !foldersAlreadyCreated.contains(path) else { return }
+        try? fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: nil)
+        foldersAlreadyCreated.insert(path)
+        foldersCreated += 1
+    }
+
+    func ensureParentFolder(_ path: String, using fm: FileManager) {
+        let parent = (path as NSString).deletingLastPathComponent
+        guard !foldersAlreadyCreated.contains(parent) else { return }
+        try? fm.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: nil)
+        foldersAlreadyCreated.insert(parent)
+    }
+
+    func recordFileUpdated() {
+        filesUpdated += 1
+    }
+
+    func recordError(_ message: String) {
+        errors.append(message)
+    }
+
+    func preloadFolders(_ folders: Set<String>) {
+        foldersAlreadyCreated.formUnion(folders)
+    }
+}
+
 /// Manages copying files from Proton Drive to the external backup destination.
 /// Supports two modes:
 /// 1. Local folder mode: Copies from the Proton Drive app's local sync folder
@@ -1030,6 +1064,12 @@ final class BackupEngine {
             // ============================================
             let collector = ScanResultsCollector()
             let copyQueue = FileCopyQueue()
+            let tracker = ConcurrentBackupTracker()
+
+            // Preload folders from the cache path if any were created
+            if !foldersAlreadyCreated.isEmpty {
+                await tracker.preloadFolders(foldersAlreadyCreated)
+            }
 
             // Thread-safe directory queue using actor
             actor DirectoryQueue {
@@ -1113,14 +1153,10 @@ final class BackupEngine {
                                     await copyQueue.enqueue(localFilesForCopy)
                                 }
 
-                                // Create folders for this batch immediately
+                                // Create folders for this batch immediately (thread-safe via actor)
                                 let (folders, _) = await collector.extractForFlush()
                                 for folderPath in folders {
-                                    if !foldersAlreadyCreated.contains(folderPath) {
-                                        try? fm.createDirectory(atPath: folderPath, withIntermediateDirectories: true, attributes: nil)
-                                        foldersAlreadyCreated.insert(folderPath)
-                                        foldersCreated += 1
-                                    }
+                                    await tracker.createFolderIfNeeded(folderPath, using: fm)
                                 }
                             }
 
@@ -1147,23 +1183,19 @@ final class BackupEngine {
                                 continue
                             }
 
-                            // Ensure parent directory exists
-                            let destParent = (file.destPath as NSString).deletingLastPathComponent
-                            if !foldersAlreadyCreated.contains(destParent) {
-                                try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
-                                foldersAlreadyCreated.insert(destParent)
-                            }
+                            // Ensure parent directory exists (thread-safe via actor)
+                            await tracker.ensureParentFolder(file.destPath, using: fm)
 
                             // Mark file as syncing
                             badgeService.markFileSyncing(relativePath: file.relPath)
 
                             do {
                                 try await copyFileWithRetry(from: file.sourceURL.path, to: file.destPath, keepVersions: keepVersions, backupRoot: backupRoot)
-                                filesUpdated += 1
+                                await tracker.recordFileUpdated()
                                 badgeService.markFileComplete(relativePath: file.relPath)
                             } catch {
                                 let desc = "Failed to backup \(file.relPath): \(error.localizedDescription)"
-                                errors.append(desc)
+                                await tracker.recordError(desc)
                                 logService.log(.error, category: .backup, message: desc, filePath: file.relPath)
                                 badgeService.markFileError(relativePath: file.relPath)
                             }
@@ -1207,12 +1239,18 @@ final class BackupEngine {
             await dirQueue.markComplete()
             await copyQueue.markComplete()
 
-            // Get final results from collector
+            // Get final results from collector and tracker
             totalFilesFound = await collector.totalFilesFound
             filesSkipped = await collector.filesSkipped
             cachedFileInfos = await collector.cachedFileInfos
             cachedDirectories = await collector.cachedDirectories
             cloudOnlyFilesToBackup = await collector.cloudOnlyFiles
+
+            // Merge tracker results back into local variables
+            foldersCreated = await tracker.foldersCreated
+            filesUpdated = await tracker.filesUpdated
+            errors.append(contentsOf: await tracker.errors)
+            foldersAlreadyCreated = await tracker.foldersAlreadyCreated
 
             let scanDuration = Date().timeIntervalSince(scanStartTime)
             let dirsScanned = await collector.directoriesScanned
