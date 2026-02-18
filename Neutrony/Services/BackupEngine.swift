@@ -260,18 +260,28 @@ actor ConcurrentBackupTracker {
     private(set) var filesUpdated: Int = 0
     private(set) var errors: [String] = []
 
-    func createFolderIfNeeded(_ path: String, using fm: FileManager) {
-        guard !foldersAlreadyCreated.contains(path) else { return }
-        try? fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: nil)
-        foldersAlreadyCreated.insert(path)
-        foldersCreated += 1
+    /// Check if folder needs to be created (returns true if not yet tracked)
+    func needsFolder(_ path: String) -> Bool {
+        return !foldersAlreadyCreated.contains(path)
     }
 
-    func ensureParentFolder(_ path: String, using fm: FileManager) {
-        let parent = (path as NSString).deletingLastPathComponent
-        guard !foldersAlreadyCreated.contains(parent) else { return }
-        try? fm.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: nil)
-        foldersAlreadyCreated.insert(parent)
+    /// Record that a folder was created (call after creating directory)
+    func recordFolderCreated(_ path: String) {
+        if !foldersAlreadyCreated.contains(path) {
+            foldersAlreadyCreated.insert(path)
+            foldersCreated += 1
+        }
+    }
+
+    /// Check if parent folder needs creation and return its path if so
+    func parentFolderIfNeeded(_ filePath: String) -> String? {
+        let parent = (filePath as NSString).deletingLastPathComponent
+        return foldersAlreadyCreated.contains(parent) ? nil : parent
+    }
+
+    /// Record that a parent folder was ensured
+    func recordParentEnsured(_ path: String) {
+        foldersAlreadyCreated.insert(path)
     }
 
     func recordFileUpdated() {
@@ -1153,10 +1163,13 @@ final class BackupEngine {
                                     await copyQueue.enqueue(localFilesForCopy)
                                 }
 
-                                // Create folders for this batch immediately (thread-safe via actor)
+                                // Create folders for this batch (check actor, create outside, record)
                                 let (folders, _) = await collector.extractForFlush()
                                 for folderPath in folders {
-                                    await tracker.createFolderIfNeeded(folderPath, using: fm)
+                                    if await tracker.needsFolder(folderPath) {
+                                        try? fm.createDirectory(atPath: folderPath, withIntermediateDirectories: true, attributes: nil)
+                                        await tracker.recordFolderCreated(folderPath)
+                                    }
                                 }
                             }
 
@@ -1183,8 +1196,11 @@ final class BackupEngine {
                                 continue
                             }
 
-                            // Ensure parent directory exists (thread-safe via actor)
-                            await tracker.ensureParentFolder(file.destPath, using: fm)
+                            // Ensure parent directory exists (check actor, create outside)
+                            if let parentPath = await tracker.parentFolderIfNeeded(file.destPath) {
+                                try? fm.createDirectory(atPath: parentPath, withIntermediateDirectories: true, attributes: nil)
+                                await tracker.recordParentEnsured(parentPath)
+                            }
 
                             // Mark file as syncing
                             badgeService.markFileSyncing(relativePath: file.relPath)
