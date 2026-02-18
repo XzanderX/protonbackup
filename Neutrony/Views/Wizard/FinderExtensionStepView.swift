@@ -148,9 +148,11 @@ struct FinderExtensionStepView: View {
     private func checkExtensionStatus() {
         checkingStatus = true
         // Small delay to allow the extension to start after being enabled
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            extensionEnabled = finderSyncHelper.isExtensionEnabled()
-            wizardState.finderExtensionEnabled = extensionEnabled
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            let enabled = await finderSyncHelper.isExtensionEnabledAsync()
+            extensionEnabled = enabled
+            wizardState.finderExtensionEnabled = enabled
             checkingStatus = false
         }
     }

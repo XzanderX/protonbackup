@@ -16,6 +16,20 @@ final class FinderSyncHelper {
     /// Check if the FinderSync extension is enabled.
     /// Note: There's no public API to check this directly, so we use a heuristic.
     func isExtensionEnabled() -> Bool {
+        // Quick check: is the extension process running?
+        let runningApps = NSWorkspace.shared.runningApplications
+        for app in runningApps {
+            if app.bundleIdentifier == extensionBundleID {
+                return true
+            }
+        }
+        // Don't block on pluginkit here - just return false for quick check
+        // Use isExtensionEnabledAsync for full check
+        return false
+    }
+
+    /// Async check if the FinderSync extension is enabled (includes pluginkit check).
+    func isExtensionEnabledAsync() async -> Bool {
         // Check if the extension process is running
         let runningApps = NSWorkspace.shared.runningApplications
         for app in runningApps {
@@ -25,7 +39,7 @@ final class FinderSyncHelper {
         }
 
         // Also check via pluginkit (extension may be enabled but not running)
-        let result = runPluginKit(arguments: ["-m", "-i", extensionBundleID])
+        let result = await runPluginKitAsync(arguments: ["-m", "-i", extensionBundleID])
         return result.contains(extensionBundleID) && !result.contains("no matches")
     }
 
@@ -92,7 +106,16 @@ final class FinderSyncHelper {
 
     // MARK: - Private Helpers
 
-    private func runPluginKit(arguments: [String]) -> String {
+    private func runPluginKitAsync(arguments: [String]) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = self.runPluginKitSync(arguments: arguments)
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
+    private func runPluginKitSync(arguments: [String]) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
         process.arguments = arguments

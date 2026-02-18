@@ -139,7 +139,9 @@ struct GeneralSettingsView: View {
 
                 if !extensionEnabled && finderSyncHelper.isExtensionAvailable() {
                     Button("Check Extension Status") {
-                        checkExtensionStatus()
+                        Task {
+                            await checkExtensionStatus()
+                        }
                     }
                     .font(.caption)
                 }
@@ -152,13 +154,13 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            checkExtensionStatus()
+        .task {
+            await checkExtensionStatus()
         }
     }
 
-    private func checkExtensionStatus() {
-        extensionEnabled = finderSyncHelper.isExtensionEnabled()
+    private func checkExtensionStatus() async {
+        extensionEnabled = await finderSyncHelper.isExtensionEnabledAsync()
     }
 }
 
