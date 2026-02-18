@@ -73,17 +73,6 @@ struct FileActivityRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            // File thumbnail placeholder
-            ZStack {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.secondary.opacity(0.1))
-                    .frame(width: 40, height: 40)
-
-                Image(systemName: "doc.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.secondary.opacity(0.6))
-            }
-
             // File info
             VStack(alignment: .leading, spacing: 4) {
                 // File name - prominent
