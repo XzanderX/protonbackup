@@ -278,10 +278,12 @@ final class RcloneService: @unchecked Sendable {
 
         do {
             try process.run()
-            process.waitUntilExit()
 
+            // Read pipe data BEFORE waitUntilExit to avoid deadlock
+            // (subprocess blocks if pipe buffer fills, parent blocks waiting for exit)
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
 
             return CommandResult(
                 exitCode: process.terminationStatus,
@@ -327,10 +329,11 @@ final class RcloneService: @unchecked Sendable {
                         inputPipe.fileHandleForWriting.closeFile()
                     }
 
-                    process.waitUntilExit()
-
+                    // Read pipe data BEFORE waitUntilExit to avoid deadlock
+                    // (subprocess blocks if pipe buffer fills, parent blocks waiting for exit)
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
 
                     let result = CommandResult(
                         exitCode: process.terminationStatus,

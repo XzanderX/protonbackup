@@ -126,9 +126,12 @@ final class FinderSyncHelper {
 
         do {
             try process.run()
+
+            // Read pipe data BEFORE waitUntilExit to avoid deadlock
+            // (subprocess blocks if pipe buffer fills, parent blocks waiting for exit)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8) ?? ""
         } catch {
             return ""

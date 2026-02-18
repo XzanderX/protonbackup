@@ -112,6 +112,10 @@ enum DiagnosticsExporter {
         process.standardError = pipe
 
         try process.run()
+
+        // Read pipe data BEFORE waitUntilExit to avoid deadlock
+        // (subprocess blocks if pipe buffer fills, parent blocks waiting for exit)
+        _ = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {

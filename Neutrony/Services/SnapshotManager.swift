@@ -360,9 +360,12 @@ final class SnapshotManager {
 
         do {
             try process.run()
+
+            // Read pipe data BEFORE waitUntilExit to avoid deadlock
+            // (subprocess blocks if pipe buffer fills, parent blocks waiting for exit)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
             return ProcessResult(exitCode: process.terminationStatus, output: output)
