@@ -104,7 +104,7 @@ struct DestinationStepView: View {
     private func chooseFolder() {
         guard let url = BookmarkManager.selectFolder(
             title: "Choose Backup Destination",
-            message: "Select the folder where Proton Backup will store your backup files."
+            message: "Select the folder where Neutrony will store your backup files."
         ) else { return }
 
         do {

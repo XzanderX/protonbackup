@@ -182,11 +182,11 @@ class FinderSync: FIFinderSync {
     // MARK: - Toolbar Item (optional)
 
     override var toolbarItemName: String {
-        return "Proton Backup"
+        return "Neutrony"
     }
 
     override var toolbarItemToolTip: String {
-        return "Proton Backup Status"
+        return "Neutrony Status"
     }
 
     override var toolbarItemImage: NSImage {

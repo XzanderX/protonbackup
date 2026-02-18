@@ -75,7 +75,7 @@ struct MenuBarView: View {
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
-                Label("Quit Proton Backup", systemImage: "power")
+                Label("Quit Neutrony", systemImage: "power")
             }
             .keyboardShortcut("q")
         }

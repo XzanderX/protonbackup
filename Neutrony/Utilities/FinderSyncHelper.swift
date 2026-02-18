@@ -98,7 +98,7 @@ final class FinderSyncHelper {
 
         1. In the window that opened, find "Added Extensions"
         2. Click on "Finder"
-        3. Enable "Proton Backup Finder Extension"
+        3. Enable "Neutrony Finder Extension"
 
         This allows the app to show sync progress directly in Finder.
         """

@@ -22,7 +22,7 @@ final class WindowManager {
     func showSetupWizard() {
         showWindow(
             id: "setup-wizard",
-            title: "Proton Backup Setup",
+            title: "Neutrony Setup",
             size: NSSize(width: 600, height: 700),
             styleMask: [.titled, .closable],
             content: {
@@ -73,7 +73,7 @@ final class WindowManager {
         // Create our own settings window using NSHostingView for reliability.
         showWindow(
             id: "settings",
-            title: "Proton Backup Settings",
+            title: "Neutrony Settings",
             size: NSSize(width: 520, height: 620),
             styleMask: [.titled, .closable],
             content: {

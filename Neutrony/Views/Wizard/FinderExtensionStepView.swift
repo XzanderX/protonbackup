@@ -111,7 +111,7 @@ struct FinderExtensionStepView: View {
                         Text("2. Click 'Added Extensions' → 'Finder'")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("3. Enable 'Proton Backup Finder Extension'")
+                        Text("3. Enable 'Neutrony Finder Extension'")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

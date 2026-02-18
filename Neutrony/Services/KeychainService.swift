@@ -6,7 +6,7 @@ final class KeychainService {
 
     static let shared = KeychainService()
 
-    private let serviceName = "com.protonbackup.app"
+    private let serviceName = "com.neutrony.app"
 
     private init() {}
 

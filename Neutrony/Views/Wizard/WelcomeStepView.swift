@@ -10,7 +10,7 @@ struct WelcomeStepView: View {
                 .font(.system(size: 56))
                 .foregroundColor(.protonPurple)
 
-            Text("Welcome to Proton Backup")
+            Text("Welcome to Neutrony")
                 .font(.title)
                 .fontWeight(.semibold)
 
