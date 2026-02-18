@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Shows a list of recent file operations during backup.
-/// Design inspired by Proton Drive's file activity view.
+/// Simple design showing file names with status text.
 struct FileActivityListView: View {
     @EnvironmentObject var appState: AppState
 
@@ -30,27 +30,22 @@ struct FileActivityListView: View {
     private var emptyState: some View {
         HStack {
             Spacer()
-            VStack(spacing: 4) {
-                Image(systemName: "doc.on.doc")
-                    .font(.title3)
-                    .foregroundColor(.secondary.opacity(0.5))
-                Text("No recent activity")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 12)
+            Text("Scanning files…")
+                .font(.caption)
+                .foregroundColor(.secondary)
             Spacer()
         }
+        .padding(.vertical, 8)
     }
 
     private var fileList: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(appState.recentFileActivities) { activity in
-                    FileActivityRow(activity: activity, destinationPath: appState.destinationPath)
+                    FileActivityRow(activity: activity)
                     if activity.id != appState.recentFileActivities.last?.id {
                         Divider()
-                            .padding(.leading, 56)
+                            .padding(.leading, 12)
                     }
                 }
             }
@@ -58,34 +53,34 @@ struct FileActivityListView: View {
     }
 }
 
-/// A single row in the file activity list - Proton Drive style.
+/// A single row in the file activity list - simple design with file name and status.
 struct FileActivityRow: View {
     let activity: FileActivity
-    let destinationPath: String?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // File type icon
-            fileIcon
-                .frame(width: 40, height: 40)
+        HStack(alignment: .center, spacing: 10) {
+            // Status indicator
+            statusIndicator
+                .frame(width: 20, height: 20)
 
             // File info
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
+                // File name
                 Text(activity.fileName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                // Status and size
-                HStack(spacing: 0) {
+                // Status text with size and folder
+                HStack(spacing: 4) {
                     Text(statusText)
                         .font(.system(size: 11))
                         .foregroundColor(statusColor)
 
                     if let size = activity.formattedSize {
-                        Text(" | ")
+                        Text("|")
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.secondary.opacity(0.5))
                         Text(size)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
@@ -94,102 +89,12 @@ struct FileActivityRow: View {
             }
 
             Spacer()
-
-            // Progress indicator or status icon
-            statusIndicator
-                .frame(width: 24, height: 24)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
         .onTapGesture {
             openDestinationInFinder()
-        }
-    }
-
-    // MARK: - File Icon
-
-    @ViewBuilder
-    private var fileIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(iconBackgroundColor)
-
-            Image(systemName: iconName)
-                .font(.system(size: 18))
-                .foregroundColor(iconForegroundColor)
-        }
-    }
-
-    private var iconName: String {
-        let ext = activity.fileExtension
-        switch ext {
-        case "pdf":
-            return "doc.fill"
-        case "doc", "docx":
-            return "doc.text.fill"
-        case "xls", "xlsx":
-            return "tablecells.fill"
-        case "ppt", "pptx", "key":
-            return "play.rectangle.fill"
-        case "jpg", "jpeg", "png", "gif", "heic", "webp":
-            return "photo.fill"
-        case "mp4", "mov", "avi", "mkv":
-            return "video.fill"
-        case "mp3", "wav", "aac", "m4a":
-            return "music.note"
-        case "zip", "rar", "7z", "tar", "gz":
-            return "doc.zipper"
-        case "txt", "md", "rtf":
-            return "doc.plaintext.fill"
-        case "html", "css", "js", "ts", "swift", "py", "json":
-            return "chevron.left.forwardslash.chevron.right"
-        default:
-            return "doc.fill"
-        }
-    }
-
-    private var iconBackgroundColor: Color {
-        let ext = activity.fileExtension
-        switch ext {
-        case "pdf":
-            return Color.red.opacity(0.15)
-        case "doc", "docx":
-            return Color.blue.opacity(0.15)
-        case "xls", "xlsx":
-            return Color.green.opacity(0.15)
-        case "ppt", "pptx", "key":
-            return Color.orange.opacity(0.15)
-        case "jpg", "jpeg", "png", "gif", "heic", "webp":
-            return Color.purple.opacity(0.15)
-        case "mp4", "mov", "avi", "mkv":
-            return Color.pink.opacity(0.15)
-        case "mp3", "wav", "aac", "m4a":
-            return Color.indigo.opacity(0.15)
-        default:
-            return Color.gray.opacity(0.15)
-        }
-    }
-
-    private var iconForegroundColor: Color {
-        let ext = activity.fileExtension
-        switch ext {
-        case "pdf":
-            return .red
-        case "doc", "docx":
-            return .blue
-        case "xls", "xlsx":
-            return .green
-        case "ppt", "pptx", "key":
-            return .orange
-        case "jpg", "jpeg", "png", "gif", "heic", "webp":
-            return .purple
-        case "mp4", "mov", "avi", "mkv":
-            return .pink
-        case "mp3", "wav", "aac", "m4a":
-            return .indigo
-        default:
-            return .gray
         }
     }
 
@@ -200,7 +105,7 @@ struct FileActivityRow: View {
         case .copying:
             return "Copying…"
         case .copied:
-            return "Copied to \(activity.folderName)"
+            return activity.folderName
         case .skipped:
             return "Skipped"
         case .error(let msg):
@@ -225,21 +130,20 @@ struct FileActivityRow: View {
     private var statusIndicator: some View {
         switch activity.status {
         case .copying:
-            // Spinning progress ring
             ProgressView()
-                .scaleEffect(0.7)
+                .scaleEffect(0.6)
                 .progressViewStyle(CircularProgressViewStyle(tint: .protonPurple))
         case .copied:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 18))
+                .font(.system(size: 14))
                 .foregroundColor(.statusGreen)
         case .skipped:
-            Image(systemName: "arrow.uturn.right.circle")
-                .font(.system(size: 18))
+            Image(systemName: "minus.circle")
+                .font(.system(size: 14))
                 .foregroundColor(.secondary)
         case .error:
             Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 18))
+                .font(.system(size: 14))
                 .foregroundColor(.statusRed)
         }
     }
@@ -247,24 +151,13 @@ struct FileActivityRow: View {
     // MARK: - Actions
 
     private func openDestinationInFinder() {
-        // Open the destination folder containing this file
         let folderURL = URL(fileURLWithPath: activity.destinationFolder)
         let fileURL = URL(fileURLWithPath: activity.fullPath)
 
-        // Try to select the file in Finder, or just open the folder
         if FileManager.default.fileExists(atPath: fileURL.path) {
             NSWorkspace.shared.selectFile(fileURL.path, inFileViewerRootedAtPath: folderURL.path)
         } else {
             NSWorkspace.shared.open(folderURL)
         }
     }
-}
-
-#Preview {
-    FileActivityListView()
-        .environmentObject({
-            let state = AppState()
-            return state
-        }())
-        .frame(width: 350)
 }

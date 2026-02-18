@@ -14,6 +14,7 @@ struct NeutronyApp: App {
         } label: {
             Image(systemName: appState.backupState.menuBarIconName)
         }
+        .menuBarExtraStyle(.window)
 
         // Settings window (uses macOS native Settings scene)
         Settings {
