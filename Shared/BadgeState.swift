@@ -39,6 +39,9 @@ public final class BadgeStateManager {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
+    /// Lock for thread-safe access to badgeStates
+    private let lock = NSLock()
+
     /// The shared container URL for the App Group
     private var containerURL: URL? {
         fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)
@@ -63,37 +66,53 @@ public final class BadgeStateManager {
 
     // MARK: - Badge State
 
-    /// Current badge states for all files
-    public private(set) var badgeStates: [String: FileBadgeState] = [:]
+    /// Current badge states for all files (internal storage)
+    private var _badgeStates: [String: FileBadgeState] = [:]
+
+    /// Thread-safe accessor for badge states (returns a copy)
+    public var badgeStates: [String: FileBadgeState] {
+        lock.lock()
+        let copy = _badgeStates
+        lock.unlock()
+        return copy
+    }
 
     /// Set badge for a specific path
     public func setBadge(_ badge: BadgeIdentifier, for path: String) {
         let state = FileBadgeState(path: path, badge: badge)
-        badgeStates[path] = state
+        lock.lock()
+        _badgeStates[path] = state
+        lock.unlock()
         saveState()
         postNotification(for: path)
     }
 
     /// Set badges for multiple paths at once
     public func setBadges(_ badge: BadgeIdentifier, for paths: [String]) {
+        lock.lock()
         for path in paths {
             let state = FileBadgeState(path: path, badge: badge)
-            badgeStates[path] = state
+            _badgeStates[path] = state
         }
+        lock.unlock()
         saveState()
         postNotification(for: nil)
     }
 
     /// Clear badge for a specific path
     public func clearBadge(for path: String) {
-        badgeStates.removeValue(forKey: path)
+        lock.lock()
+        _badgeStates.removeValue(forKey: path)
+        lock.unlock()
         saveState()
         postNotification(for: path)
     }
 
     /// Clear all badges
     public func clearAllBadges() {
-        badgeStates.removeAll()
+        lock.lock()
+        _badgeStates.removeAll()
+        lock.unlock()
         saveState()
         postNotification(for: nil)
     }
@@ -102,7 +121,10 @@ public final class BadgeStateManager {
     public func badge(for path: String) -> BadgeIdentifier {
         // Only return badge if this exact path has one
         // Don't inherit from parent folders - each file/folder manages its own badge
-        if let state = badgeStates[path] {
+        lock.lock()
+        let state = _badgeStates[path]
+        lock.unlock()
+        if let state = state {
             return state.badge
         }
         return .none
@@ -115,15 +137,18 @@ public final class BadgeStateManager {
               let states = try? decoder.decode([String: FileBadgeState].self, from: data) else {
             return
         }
-        badgeStates = states
+        lock.lock()
+        _badgeStates = states
+        lock.unlock()
     }
 
     /// Save state to disk
     private func saveState() {
-        guard let url = stateFileURL,
-              let data = try? encoder.encode(badgeStates) else {
-            return
-        }
+        guard let url = stateFileURL else { return }
+        lock.lock()
+        let statesToSave = _badgeStates
+        lock.unlock()
+        guard let data = try? encoder.encode(statesToSave) else { return }
         try? data.write(to: url, options: .atomic)
     }
 
