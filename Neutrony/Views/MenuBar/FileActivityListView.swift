@@ -1,22 +1,21 @@
 import SwiftUI
 
 /// Shows a list of recent file operations during backup.
-/// Simple design showing file names with status text.
 struct FileActivityListView: View {
     @EnvironmentObject var appState: AppState
 
     /// Maximum height as fraction of screen height
-    private let maxHeightFraction: CGFloat = 0.5
+    private let maxHeightFraction: CGFloat = 0.4
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Group {
             if appState.recentFileActivities.isEmpty {
                 emptyState
             } else {
                 fileList
             }
         }
-        .frame(maxHeight: maxHeight)
+        .frame(minHeight: 100, maxHeight: maxHeight)
     }
 
     /// Calculate max height based on screen size
@@ -24,18 +23,36 @@ struct FileActivityListView: View {
         if let screen = NSScreen.main {
             return screen.visibleFrame.height * maxHeightFraction
         }
-        return 400 // Fallback
+        return 300
     }
 
     private var emptyState: some View {
-        HStack {
+        VStack(spacing: 8) {
             Spacer()
-            Text("Scanning files…")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if appState.backupState.isRunning {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Scanning files…")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            } else if !appState.isDestinationConnected {
+                Image(systemName: "externaldrive.badge.questionmark")
+                    .font(.system(size: 24))
+                    .foregroundColor(.secondary.opacity(0.5))
+                Text("Connect your backup drive")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            } else {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 24))
+                    .foregroundColor(.statusGreen.opacity(0.5))
+                Text("All files backed up")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
             Spacer()
         }
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
     }
 
     private var fileList: some View {
@@ -43,58 +60,70 @@ struct FileActivityListView: View {
             LazyVStack(spacing: 0) {
                 ForEach(appState.recentFileActivities) { activity in
                     FileActivityRow(activity: activity)
-                    if activity.id != appState.recentFileActivities.last?.id {
-                        Divider()
-                            .padding(.leading, 12)
-                    }
                 }
             }
         }
     }
 }
 
-/// A single row in the file activity list - simple design with file name and status.
+/// A single row in the file activity list.
 struct FileActivityRow: View {
     let activity: FileActivity
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            // Status indicator
-            statusIndicator
-                .frame(width: 20, height: 20)
+            // File type icon
+            fileIcon
+                .frame(width: 32, height: 32)
 
             // File info
             VStack(alignment: .leading, spacing: 2) {
-                // File name
                 Text(activity.fileName)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                // Status text with size and folder
-                HStack(spacing: 4) {
+                HStack(spacing: 0) {
                     Text(statusText)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10))
                         .foregroundColor(statusColor)
 
                     if let size = activity.formattedSize {
-                        Text("|")
-                            .font(.system(size: 11))
+                        Text(" | ")
+                            .font(.system(size: 10))
                             .foregroundColor(.secondary.opacity(0.5))
                         Text(size)
-                            .font(.system(size: 11))
+                            .font(.system(size: 10))
                             .foregroundColor(.secondary)
                     }
                 }
             }
 
             Spacer()
+
+            // Status indicator
+            statusIndicator
+                .frame(width: 20, height: 20)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture {
             openDestinationInFinder()
+        }
+    }
+
+    // MARK: - File Icon
+
+    @ViewBuilder
+    private var fileIcon: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.1))
+
+            Image(systemName: "doc.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
         }
     }
 
@@ -105,11 +134,11 @@ struct FileActivityRow: View {
         case .copying:
             return "Copying…"
         case .copied:
-            return activity.folderName
+            return "Copied"
         case .skipped:
             return "Skipped"
         case .error(let msg):
-            return "Error: \(msg)"
+            return msg
         }
     }
 
@@ -131,19 +160,19 @@ struct FileActivityRow: View {
         switch activity.status {
         case .copying:
             ProgressView()
-                .scaleEffect(0.6)
+                .scaleEffect(0.5)
                 .progressViewStyle(CircularProgressViewStyle(tint: .protonPurple))
         case .copied:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundColor(.statusGreen)
+            Image(systemName: "checkmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
         case .skipped:
-            Image(systemName: "minus.circle")
-                .font(.system(size: 14))
+            Image(systemName: "minus")
+                .font(.system(size: 12))
                 .foregroundColor(.secondary)
         case .error:
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 14))
+            Image(systemName: "exclamationmark")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.statusRed)
         }
     }
