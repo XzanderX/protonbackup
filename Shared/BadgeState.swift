@@ -42,6 +42,15 @@ public final class BadgeStateManager {
     /// Lock for thread-safe access to badgeStates
     private let lock = NSLock()
 
+    /// Queue for debounced disk writes and notifications
+    private let writeQueue = DispatchQueue(label: "com.neutrony.badgeWrite")
+
+    /// Debounce interval for disk writes (milliseconds)
+    private let debounceInterval: UInt64 = 250
+
+    /// Work item for debounced save
+    private var saveWorkItem: DispatchWorkItem?
+
     /// The shared container URL for the App Group
     private var containerURL: URL? {
         fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)
@@ -83,8 +92,7 @@ public final class BadgeStateManager {
         lock.lock()
         _badgeStates[path] = state
         lock.unlock()
-        saveState()
-        postNotification(for: path)
+        scheduleDebouncedSave()
     }
 
     /// Set badges for multiple paths at once
@@ -95,8 +103,7 @@ public final class BadgeStateManager {
             _badgeStates[path] = state
         }
         lock.unlock()
-        saveState()
-        postNotification(for: nil)
+        scheduleDebouncedSave()
     }
 
     /// Clear badge for a specific path
@@ -104,8 +111,7 @@ public final class BadgeStateManager {
         lock.lock()
         _badgeStates.removeValue(forKey: path)
         lock.unlock()
-        saveState()
-        postNotification(for: path)
+        scheduleDebouncedSave()
     }
 
     /// Clear all badges
@@ -113,8 +119,9 @@ public final class BadgeStateManager {
         lock.lock()
         _badgeStates.removeAll()
         lock.unlock()
-        saveState()
-        postNotification(for: nil)
+        // Immediate save and notify for clear all (important state change)
+        saveStateNow()
+        postNotification()
     }
 
     /// Get badge for a specific path
@@ -142,14 +149,43 @@ public final class BadgeStateManager {
         lock.unlock()
     }
 
-    /// Save state to disk
-    private func saveState() {
+    /// Schedule a debounced save - coalesces rapid updates
+    private func scheduleDebouncedSave() {
+        writeQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            // Cancel any pending save
+            self.saveWorkItem?.cancel()
+
+            // Schedule new save after debounce interval
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.saveStateNow()
+                self?.postNotification()
+            }
+            self.saveWorkItem = workItem
+
+            self.writeQueue.asyncAfter(
+                deadline: .now() + .milliseconds(Int(self.debounceInterval)),
+                execute: workItem
+            )
+        }
+    }
+
+    /// Immediately save state to disk
+    private func saveStateNow() {
         guard let url = stateFileURL else { return }
         lock.lock()
         let statesToSave = _badgeStates
         lock.unlock()
         guard let data = try? encoder.encode(statesToSave) else { return }
         try? data.write(to: url, options: .atomic)
+    }
+
+    /// Flush any pending saves immediately (call before app termination)
+    public func flushPendingChanges() {
+        saveWorkItem?.cancel()
+        saveStateNow()
+        postNotification()
     }
 
     // MARK: - Monitored Directories
@@ -161,7 +197,7 @@ public final class BadgeStateManager {
         if let data = try? encoder.encode(paths) {
             try? data.write(to: url, options: .atomic)
         }
-        postNotification(for: nil)
+        postNotification()
     }
 
     /// Get monitored directories
@@ -176,18 +212,17 @@ public final class BadgeStateManager {
 
     // MARK: - Notifications
 
-    private func postNotification(for path: String?) {
+    private func postNotification() {
         // Post distributed notification for cross-process communication
-        let center = DistributedNotificationCenter.default()
-        var userInfo: [String: Any] = [:]
-        if let path = path {
-            userInfo["path"] = path
+        // Batched - doesn't include specific path since multiple may have changed
+        DispatchQueue.main.async {
+            let center = DistributedNotificationCenter.default()
+            center.postNotificationName(
+                NSNotification.Name(Self.badgeUpdateNotification),
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: false  // Allow coalescing
+            )
         }
-        center.postNotificationName(
-            NSNotification.Name(Self.badgeUpdateNotification),
-            object: nil,
-            userInfo: userInfo,
-            deliverImmediately: true
-        )
     }
 }
