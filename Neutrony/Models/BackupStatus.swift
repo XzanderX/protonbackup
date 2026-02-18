@@ -104,32 +104,41 @@ struct BackupProgress: Equatable {
 struct FileActivity: Identifiable, Equatable {
     let id: UUID
     let fileName: String
-    let folderPath: String
+    let destinationFolder: String  // Full path to destination folder
+    let fileSize: Int64?           // File size in bytes (optional)
     let status: FileActivityStatus
     let timestamp: Date
 
-    init(fileName: String, folderPath: String, status: FileActivityStatus) {
+    init(fileName: String, destinationFolder: String, fileSize: Int64? = nil, status: FileActivityStatus) {
         self.id = UUID()
         self.fileName = fileName
-        self.folderPath = folderPath
+        self.destinationFolder = destinationFolder
+        self.fileSize = fileSize
         self.status = status
         self.timestamp = Date()
     }
 
     /// Display-friendly folder name (last component of path)
     var folderName: String {
-        (folderPath as NSString).lastPathComponent
+        (destinationFolder as NSString).lastPathComponent
     }
 
-    /// Full path to the file
+    /// Full path to the file in destination
     var fullPath: String {
-        (folderPath as NSString).appendingPathComponent(fileName)
+        (destinationFolder as NSString).appendingPathComponent(fileName)
     }
 
-    var relativeTime: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: timestamp, relativeTo: Date())
+    /// File extension for icon selection
+    var fileExtension: String {
+        (fileName as NSString).pathExtension.lowercased()
+    }
+
+    /// Formatted file size string
+    var formattedSize: String? {
+        guard let size = fileSize else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: size)
     }
 }
 

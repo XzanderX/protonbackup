@@ -598,14 +598,15 @@ final class AppState: ObservableObject {
     }
 
     /// Update the status of an existing file activity (e.g., copying → copied).
-    func updateFileActivity(fileName: String, folderPath: String, status: FileActivityStatus) {
+    func updateFileActivity(fileName: String, destinationFolder: String, status: FileActivityStatus) {
         if let index = recentFileActivities.firstIndex(where: {
-            $0.fileName == fileName && $0.folderPath == folderPath
+            $0.fileName == fileName && $0.destinationFolder == destinationFolder
         }) {
             let old = recentFileActivities[index]
             recentFileActivities[index] = FileActivity(
                 fileName: old.fileName,
-                folderPath: old.folderPath,
+                destinationFolder: old.destinationFolder,
+                fileSize: old.fileSize,
                 status: status
             )
         }
@@ -627,40 +628,48 @@ final class AppState: ObservableObject {
             backupState = .backing(progress: progress)
         }
 
-        // Track file activity
-        guard let currentFile = progress.currentFileName else { return }
+        // Track file activity using destination path
+        guard let currentFile = progress.currentFileName,
+              let destPath = destinationPath else { return }
 
         // If we moved to a new file, mark the previous one as copied
         if let lastFile = lastProcessedFile, lastFile != currentFile {
-            let (lastName, lastFolder) = splitFilePath(lastFile, basePath: sourcePath)
-            updateFileActivity(fileName: lastName, folderPath: lastFolder, status: .copied)
+            let (lastName, lastDestFolder) = splitFilePathForDestination(lastFile, destRoot: destPath)
+            updateFileActivity(fileName: lastName, destinationFolder: lastDestFolder, status: .copied)
         }
 
         // Add new file as copying (if not already tracked)
         if currentFile != lastProcessedFile {
-            let (fileName, folderPath) = splitFilePath(currentFile, basePath: sourcePath)
+            let (fileName, destFolder) = splitFilePathForDestination(currentFile, destRoot: destPath)
+
+            // Try to get file size from source
+            var fileSize: Int64? = nil
+            if let source = sourcePath {
+                let sourceFilePath = (source as NSString).appendingPathComponent(currentFile)
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: sourceFilePath),
+                   let size = attrs[.size] as? Int64 {
+                    fileSize = size
+                }
+            }
+
             addFileActivity(FileActivity(
                 fileName: fileName,
-                folderPath: folderPath,
+                destinationFolder: destFolder,
+                fileSize: fileSize,
                 status: .copying
             ))
             lastProcessedFile = currentFile
         }
     }
 
-    /// Split a relative file path into file name and folder path.
-    private func splitFilePath(_ relPath: String, basePath: String?) -> (fileName: String, folderPath: String) {
+    /// Split a relative file path into file name and destination folder path.
+    private func splitFilePathForDestination(_ relPath: String, destRoot: String) -> (fileName: String, destFolder: String) {
         let nsPath = relPath as NSString
         let fileName = nsPath.lastPathComponent
         let relFolder = nsPath.deletingLastPathComponent
 
-        // If we have a base path, construct full folder path
-        if let base = basePath {
-            let fullFolder = relFolder.isEmpty ? base : (base as NSString).appendingPathComponent(relFolder)
-            return (fileName, fullFolder)
-        }
-
-        return (fileName, relFolder.isEmpty ? "/" : relFolder)
+        let destFolder = relFolder.isEmpty ? destRoot : (destRoot as NSString).appendingPathComponent(relFolder)
+        return (fileName, destFolder)
     }
 
     /// Mark all "copying" activities as "copied" when backup completes.
@@ -669,7 +678,8 @@ final class AppState: ObservableObject {
             if case .copying = activity.status {
                 recentFileActivities[index] = FileActivity(
                     fileName: activity.fileName,
-                    folderPath: activity.folderPath,
+                    destinationFolder: activity.destinationFolder,
+                    fileSize: activity.fileSize,
                     status: .copied
                 )
             }
