@@ -24,6 +24,12 @@ final class LogService: ObservableObject {
     private var logFileHandle: FileHandle?
     private let logQueue = DispatchQueue(label: "com.neutrony.log", qos: .utility)
 
+    /// Buffer for batching entry updates to reduce main thread work
+    private var pendingEntries: [BackupLogEntry] = []
+    private let pendingLock = NSLock()
+    private var flushWorkItem: DispatchWorkItem?
+    private let flushInterval: TimeInterval = 0.5  // Flush every 500ms
+
     private init() {
         // Detect if running from a terminal (not inside a .app bundle)
         self.printToTerminal = Bundle.main.bundlePath.hasSuffix(".app") == false
@@ -76,10 +82,41 @@ final class LogService: ObservableObject {
             self?.writeToFile(entry)
         }
 
-        // Update in-memory entries on main thread
+        // Batch update in-memory entries to reduce main thread work
+        pendingLock.lock()
+        pendingEntries.append(entry)
+        pendingLock.unlock()
+        scheduleFlush()
+    }
+
+    /// Schedule a batched flush of pending entries to the main thread
+    private func scheduleFlush() {
+        // Cancel any pending flush
+        flushWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingEntries()
+        }
+        flushWorkItem = workItem
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + flushInterval,
+            execute: workItem
+        )
+    }
+
+    /// Flush pending entries to the published array
+    private func flushPendingEntries() {
+        pendingLock.lock()
+        let entriesToAdd = pendingEntries
+        pendingEntries.removeAll()
+        pendingLock.unlock()
+
+        guard !entriesToAdd.isEmpty else { return }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.entries.append(entry)
+            self.entries.append(contentsOf: entriesToAdd)
             if self.entries.count > self.maxInMemoryEntries {
                 self.entries.removeFirst(self.entries.count - self.maxInMemoryEntries)
             }
