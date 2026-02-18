@@ -10,15 +10,22 @@ struct LogViewerView: View {
     @State private var selectedCategory: LogCategory? = nil
     @State private var autoScroll = true
 
-    private var filteredEntries: [BackupLogEntry] {
-        logService.filteredEntries(
+    /// Maximum entries to display in the List to keep scrolling responsive.
+    private let maxDisplayedEntries = 500
+
+    var body: some View {
+        // Compute filtered entries ONCE per body evaluation (was called 5 times before)
+        let filtered = logService.filteredEntries(
             minLevel: selectedLevel,
             category: selectedCategory,
             searchText: searchText.isEmpty ? nil : searchText
         )
-    }
+        let totalCount = filtered.count
+        // Only display the tail to keep the List performant
+        let displayed = totalCount > maxDisplayedEntries
+            ? Array(filtered.suffix(maxDisplayedEntries))
+            : filtered
 
-    var body: some View {
         VStack(spacing: 0) {
             // Toolbar
             HStack {
@@ -88,7 +95,7 @@ struct LogViewerView: View {
             Divider()
 
             // Log entries
-            if filteredEntries.isEmpty {
+            if displayed.isEmpty {
                 VStack {
                     Spacer()
                     Image(systemName: "doc.text")
@@ -100,14 +107,14 @@ struct LogViewerView: View {
                 }
             } else {
                 ScrollViewReader { proxy in
-                    List(filteredEntries) { entry in
+                    List(displayed) { entry in
                         LogEntryRow(entry: entry)
                             .id(entry.id)
                     }
                     .font(.system(.caption, design: .monospaced))
                     .listStyle(.plain)
-                    .onChange(of: filteredEntries.count) { _ in
-                        if autoScroll, let last = filteredEntries.last {
+                    .onChange(of: logService.entries.count) { _ in
+                        if autoScroll, let last = displayed.last {
                             proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
@@ -118,13 +125,19 @@ struct LogViewerView: View {
 
             // Status bar
             HStack {
-                Text("\(filteredEntries.count) entries")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if totalCount > maxDisplayedEntries {
+                    Text("Showing latest \(displayed.count) of \(totalCount) entries")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("\(totalCount) entries")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
 
                 Spacer()
 
-                if let lastEntry = filteredEntries.last {
+                if let lastEntry = displayed.last {
                     Text("Latest: \(lastEntry.formattedTimestamp)")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -136,7 +149,12 @@ struct LogViewerView: View {
     }
 
     private func copyToClipboard() {
-        let text = filteredEntries.map(\.displayLine).joined(separator: "\n")
+        // Export all filtered entries (not just displayed) to clipboard
+        let text = logService.filteredEntries(
+            minLevel: selectedLevel,
+            category: selectedCategory,
+            searchText: searchText.isEmpty ? nil : searchText
+        ).map(\.displayLine).joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
