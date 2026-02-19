@@ -213,6 +213,7 @@ actor FileCopyQueue {
     private var isComplete = false
     private(set) var filesQueued = 0
     private(set) var filesProcessed = 0
+    private(set) var currentRelPath: String?
 
     func enqueue(_ files: [(sourceURL: URL, destPath: String, relPath: String)]) {
         queue.append(contentsOf: files)
@@ -221,7 +222,9 @@ actor FileCopyQueue {
 
     func dequeue() -> (sourceURL: URL, destPath: String, relPath: String)? {
         guard !queue.isEmpty else { return nil }
-        return queue.removeFirst()
+        let file = queue.removeFirst()
+        currentRelPath = file.relPath
+        return file
     }
 
     func dequeueBatch(maxCount: Int) -> [(sourceURL: URL, destPath: String, relPath: String)] {
@@ -229,6 +232,9 @@ actor FileCopyQueue {
         guard count > 0 else { return [] }
         let batch = Array(queue.prefix(count))
         queue.removeFirst(count)
+        if let last = batch.last {
+            currentRelPath = last.relPath
+        }
         return batch
     }
 
@@ -1239,10 +1245,13 @@ final class BackupEngine {
                         logService.log(.debug, category: .backup,
                                        message: "Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
 
+                        // Report the current file being copied (or scanning status if no file yet)
+                        let currentFile = await copyQueue.currentRelPath
+                        let displayName = currentFile ?? "Scanning & copying: \(filesFound) found, \(copied) copied..."
                         let scanProgress = BackupProgress(
-                            totalFiles: queued,
+                            totalFiles: filesFound,
                             completedFiles: copied,
-                            currentFileName: "Scanning & copying: \(filesFound) found, \(copied) copied..."
+                            currentFileName: displayName
                         )
                         progressHandler(scanProgress)
                     }

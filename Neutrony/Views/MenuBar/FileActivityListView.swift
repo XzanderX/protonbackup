@@ -66,46 +66,41 @@ struct FileActivityListView: View {
     }
 }
 
-/// A single row in the file activity list - Proton Drive style.
-/// Shows: thumbnail, file name, status with size and clickable folder link.
+/// A single row in the file activity list.
+/// Shows: file name on first line, status with destination folder on second line.
 struct FileActivityRow: View {
     let activity: FileActivity
 
+    /// Last path component of the destination folder for display
+    private var shortFolderName: String {
+        let folder = activity.destinationFolder as NSString
+        return folder.lastPathComponent
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            // File info
-            VStack(alignment: .leading, spacing: 4) {
-                // File name - prominent
+            VStack(alignment: .leading, spacing: 2) {
+                // File name
                 Text(activity.fileName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                // Status with size and folder link
+                // Status - Folder name
                 HStack(spacing: 0) {
                     Text(statusText)
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
 
-                    if let size = activity.formattedSize {
-                        Text(" | ")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary.opacity(0.5))
-                        Text(size)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-
-                    Text(" • ")
+                    Text(" - ")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary.opacity(0.5))
 
-                    // Clickable folder link
                     Button {
                         openFolderInFinder()
                     } label: {
-                        Text(activity.folderName)
+                        Text(shortFolderName)
                             .font(.system(size: 11))
                             .foregroundColor(.protonPurple)
                             .underline()
@@ -116,7 +111,6 @@ struct FileActivityRow: View {
 
             Spacer()
 
-            // Status indicator on the right
             statusIndicator
                 .frame(width: 20, height: 20)
         }
