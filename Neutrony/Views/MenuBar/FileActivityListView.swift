@@ -66,15 +66,14 @@ struct FileActivityListView: View {
     }
 }
 
-/// A single row in the file activity list.
-/// Shows: file name on first line, status with destination folder on second line.
+/// A single row in the file activity list - Proton Drive style.
+/// Shows: file name on first line, status - folder link on second line.
 struct FileActivityRow: View {
     let activity: FileActivity
 
     /// Last path component of the destination folder for display
     private var shortFolderName: String {
-        let folder = activity.destinationFolder as NSString
-        return folder.lastPathComponent
+        (activity.destinationFolder as NSString).lastPathComponent
     }
 
     var body: some View {
@@ -85,17 +84,17 @@ struct FileActivityRow: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
 
-                // Status - Folder name
-                HStack(spacing: 0) {
-                    Text(statusText)
+                // Status - Folder link
+                HStack(spacing: 4) {
+                    Text(activity.status.displayText)
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
 
-                    Text(" - ")
+                    Text("-")
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary.opacity(0.5))
+                        .foregroundColor(.secondary)
 
                     Button {
                         openFolderInFinder()
@@ -104,6 +103,7 @@ struct FileActivityRow: View {
                             .font(.system(size: 11))
                             .foregroundColor(.protonPurple)
                             .underline()
+                            .lineLimit(1)
                     }
                     .buttonStyle(.plain)
                 }
@@ -115,34 +115,37 @@ struct FileActivityRow: View {
                 .frame(width: 20, height: 20)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .contentShape(Rectangle())
     }
 
-    // MARK: - Status
-
-    private var statusText: String {
-        activity.status.displayText
+    private func openFolderInFinder() {
+        let folderURL = URL(fileURLWithPath: activity.destinationFolder)
+        NSWorkspace.shared.open(folderURL)
     }
 
     @ViewBuilder
     private var statusIndicator: some View {
         switch activity.status {
         case .indexing:
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+            // Empty circle for indexing
+            Circle()
+                .stroke(Color.secondary.opacity(0.3), lineWidth: 2)
+        case .waitingToDownload:
+            // Empty circle for waiting
+            Circle()
+                .stroke(Color.secondary.opacity(0.3), lineWidth: 2)
         case .downloading(let progress):
             CircularProgressView(progress: progress)
-                .frame(width: 16, height: 16)
         case .copying(let progress):
             if let p = progress {
                 CircularProgressView(progress: p)
-                    .frame(width: 16, height: 16)
             } else {
-                ProgressView()
-                    .scaleEffect(0.5)
-                    .progressViewStyle(CircularProgressViewStyle(tint: .protonPurple))
+                // Indeterminate - show partial circle
+                Circle()
+                    .trim(from: 0, to: 0.25)
+                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
             }
         case .copied:
             Image(systemName: "checkmark")
@@ -151,17 +154,10 @@ struct FileActivityRow: View {
         case .skipped:
             EmptyView()
         case .error:
-            Image(systemName: "exclamationmark")
-                .font(.system(size: 12, weight: .semibold))
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 14))
                 .foregroundColor(.statusRed)
         }
-    }
-
-    // MARK: - Actions
-
-    private func openFolderInFinder() {
-        let folderURL = URL(fileURLWithPath: activity.destinationFolder)
-        NSWorkspace.shared.open(folderURL)
     }
 }
 

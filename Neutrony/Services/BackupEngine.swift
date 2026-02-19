@@ -1246,11 +1246,16 @@ final class BackupEngine {
                                        message: "Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
 
                         // Report the current file being copied (or scanning status if no file yet)
+                        // Include skipped files (already up-to-date) in the completed count
+                        let skipped = await collector.filesSkipped
+                        let totalScanned = filesFound + skipped
+                        let totalCompleted = copied + skipped
+
                         let currentFile = await copyQueue.currentRelPath
-                        let displayName = currentFile ?? "Scanning & copying: \(filesFound) found, \(copied) copied..."
+                        let displayName = currentFile ?? "Scanning & copying: \(totalScanned) found, \(totalCompleted) done..."
                         let scanProgress = BackupProgress(
-                            totalFiles: filesFound,
-                            completedFiles: copied,
+                            totalFiles: totalScanned,
+                            completedFiles: totalCompleted,
                             currentFileName: displayName
                         )
                         progressHandler(scanProgress)
@@ -1305,11 +1310,14 @@ final class BackupEngine {
         let destRelative = Set(destFileSizes.keys)
         let filesToDelete = destRelative.subtracting(sourceRelative)
 
-        // Total remaining work: cloud-only files + deletions (local files already copied)
-        let totalWork = cloudOnlyFilesToBackup.count + filesToDelete.count
-        var completed = 0
+        // Calculate totals including skipped files for accurate progress display
+        // Total = all files scanned (those needing update + those already up-to-date)
+        // Completed = skipped + local files copied + cloud files processed
+        let totalAllFiles = totalFilesFound + filesSkipped
+        let baseCompleted = filesSkipped + filesUpdated  // Already done before Phase 1
+        var cloudCompleted = 0
 
-        if totalWork == 0 && filesUpdated == 0 {
+        if cloudOnlyFilesToBackup.isEmpty && filesToDelete.isEmpty && filesUpdated == 0 {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
@@ -1332,8 +1340,8 @@ final class BackupEngine {
                 }
 
                 let currentProgress = BackupProgress(
-                    totalFiles: totalWork,
-                    completedFiles: completed,
+                    totalFiles: totalAllFiles,
+                    completedFiles: baseCompleted + cloudCompleted,
                     currentFileName: "⬇ \(relPath)"
                 )
                 progressHandler(currentProgress)
@@ -1353,7 +1361,7 @@ final class BackupEngine {
                         errors.append("Download timeout: \(relPath) (placeholder kept)")
                         logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
                         badgeService.markFileError(relativePath: relPath)
-                        completed += 1
+                        cloudCompleted += 1
                         continue
                     }
                     filesDownloaded += 1
@@ -1380,7 +1388,7 @@ final class BackupEngine {
                     badgeService.markFileError(relativePath: relPath)
                 }
 
-                completed += 1
+                cloudCompleted += 1
             }
 
             logService.log(.info, category: .backup,
@@ -1399,9 +1407,10 @@ final class BackupEngine {
                     try await Task.sleep(nanoseconds: 500_000_000)
                 }
 
+                // Deletions don't affect file count, just show current status
                 let currentProgress = BackupProgress(
-                    totalFiles: totalWork,
-                    completedFiles: completed,
+                    totalFiles: totalAllFiles,
+                    completedFiles: baseCompleted + cloudCompleted,
                     currentFileName: "🗑 \(relPath)"
                 )
                 progressHandler(currentProgress)
@@ -1421,8 +1430,6 @@ final class BackupEngine {
                     errors.append(desc)
                     logService.log(.error, category: .backup, message: desc, filePath: relPath)
                 }
-
-                completed += 1
             }
         }
 

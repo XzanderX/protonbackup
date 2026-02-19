@@ -836,7 +836,12 @@ final class AppState: ObservableObject {
 
     /// Determine file activity status based on progress info.
     private func determineFileStatus(from fileName: String, progress: BackupProgress) -> FileActivityStatus {
-        // BackupEngine prefixes with ⬇ for downloads
+        // BackupEngine prefixes with ⏳ for waiting to download
+        if fileName.hasPrefix("⏳") {
+            return .waitingToDownload
+        }
+
+        // BackupEngine prefixes with ⬇ for active downloads
         if fileName.hasPrefix("⬇") {
             // Calculate download progress if available
             let downloadProgress = progress.totalFiles > 0 ? Double(progress.completedFiles) / Double(progress.totalFiles) : 0.5
@@ -855,6 +860,12 @@ final class AppState: ObservableObject {
     /// Remove status prefixes from file name for display.
     private func cleanFileNameForDisplay(_ fileName: String) -> String {
         var clean = fileName
+        // Remove waiting prefix
+        if clean.hasPrefix("⏳ ") {
+            clean = String(clean.dropFirst(2))
+        } else if clean.hasPrefix("⏳") {
+            clean = String(clean.dropFirst(1))
+        }
         // Remove download prefix
         if clean.hasPrefix("⬇ ") {
             clean = String(clean.dropFirst(2))
