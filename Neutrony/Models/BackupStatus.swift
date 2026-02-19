@@ -143,26 +143,51 @@ struct FileActivity: Identifiable, Equatable {
 }
 
 enum FileActivityStatus: Equatable {
-    case copying
+    case indexing
+    case downloading(progress: Double)  // 0.0 to 1.0
+    case copying(progress: Double?)     // nil = indeterminate, 0.0-1.0 = percentage
     case copied
     case skipped
     case error(String)
 
     var displayText: String {
         switch self {
-        case .copying: return "Copying…"
-        case .copied: return "Copied"
-        case .skipped: return "Skipped"
-        case .error(let msg): return "Error: \(msg)"
+        case .indexing:
+            return "Indexing"
+        case .downloading(let progress):
+            return "Downloading \(Int(progress * 100))%"
+        case .copying(let progress):
+            if let p = progress {
+                return "Copying \(Int(p * 100))%"
+            }
+            return "Copying…"
+        case .copied:
+            return "Copied"
+        case .skipped:
+            return "Skipped"
+        case .error(let msg):
+            return "Error: \(msg)"
         }
     }
 
     var iconName: String {
         switch self {
+        case .indexing: return "magnifyingglass"
+        case .downloading: return "arrow.down.circle"
         case .copying: return "arrow.right.circle"
         case .copied: return "checkmark.circle.fill"
         case .skipped: return "arrow.uturn.right.circle"
         case .error: return "exclamationmark.circle.fill"
+        }
+    }
+
+    /// Whether this status indicates an active operation
+    var isActive: Bool {
+        switch self {
+        case .indexing, .downloading, .copying:
+            return true
+        default:
+            return false
         }
     }
 }

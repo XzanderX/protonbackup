@@ -128,25 +128,28 @@ struct FileActivityRow: View {
     // MARK: - Status
 
     private var statusText: String {
-        switch activity.status {
-        case .copying:
-            return "Copying…"
-        case .copied:
-            return "Copied"
-        case .skipped:
-            return "Skipped"
-        case .error(let msg):
-            return msg
-        }
+        activity.status.displayText
     }
 
     @ViewBuilder
     private var statusIndicator: some View {
         switch activity.status {
-        case .copying:
-            ProgressView()
-                .scaleEffect(0.5)
-                .progressViewStyle(CircularProgressViewStyle(tint: .protonPurple))
+        case .indexing:
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+        case .downloading(let progress):
+            CircularProgressView(progress: progress)
+                .frame(width: 16, height: 16)
+        case .copying(let progress):
+            if let p = progress {
+                CircularProgressView(progress: p)
+                    .frame(width: 16, height: 16)
+            } else {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .progressViewStyle(CircularProgressViewStyle(tint: .protonPurple))
+            }
         case .copied:
             Image(systemName: "checkmark")
                 .font(.system(size: 12, weight: .semibold))
@@ -165,5 +168,24 @@ struct FileActivityRow: View {
     private func openFolderInFinder() {
         let folderURL = URL(fileURLWithPath: activity.destinationFolder)
         NSWorkspace.shared.open(folderURL)
+    }
+}
+
+/// Circular progress indicator showing percentage complete.
+struct CircularProgressView: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            // Background circle
+            Circle()
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
+
+            // Progress arc
+            Circle()
+                .trim(from: 0, to: CGFloat(min(progress, 1.0)))
+                .stroke(Color.protonPurple, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
     }
 }

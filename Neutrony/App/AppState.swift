@@ -39,8 +39,15 @@ final class AppState: ObservableObject {
     /// Timer for periodic remote change polling.
     private var pollingTimer: Timer?
 
+    /// Timer for periodic destination availability checks.
+    private var destinationCheckTimer: Timer?
+
     /// Single-run lock.
     private var syncState = SyncState()
+
+    /// Observers for sleep/wake notifications.
+    private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
 
     // MARK: - Initialization
 
@@ -57,6 +64,7 @@ final class AppState: ObservableObject {
 
         setupDriveMonitor()
         setupFileWatcher()
+        setupSleepWakeObservers()
 
         // Wire self to WindowManager so it can create windows with appState
         WindowManager.shared.appState = self
@@ -512,11 +520,84 @@ final class AppState: ObservableObject {
 
     private func checkDestinationAvailability() {
         let (available, path) = driveMonitor.isDestinationAvailable(bookmark: config.destinationBookmark)
+
+        // If backup is actively running and producing progress, the drive must be connected
+        // This fixes stale status after wake from sleep
+        let wasDisconnected = !isDestinationConnected
         isDestinationConnected = available
         destinationPath = path
 
         if !available && config.setupCompleted && !syncState.isLocked {
             backupState = .destinationDisconnected
+        } else if available && wasDisconnected {
+            // Drive became available - log it
+            logService.log(.info, category: .driveMonitor,
+                           message: "Destination now available at: \(path ?? "unknown")")
+        }
+    }
+
+    // MARK: - Sleep/Wake handling
+
+    /// Set up observers for system sleep and wake events.
+    private func setupSleepWakeObservers() {
+        let workspace = NSWorkspace.shared
+        let notificationCenter = workspace.notificationCenter
+
+        // Handle wake from sleep
+        wakeObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleWakeFromSleep()
+        }
+
+        // Handle going to sleep (optional - cancel any running operations)
+        sleepObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleGoingToSleep()
+        }
+
+        // Also start a periodic check timer for destination availability
+        // This catches cases where DiskArbitration callbacks are missed
+        startDestinationCheckTimer()
+    }
+
+    /// Handle system wake from sleep.
+    private func handleWakeFromSleep() {
+        logService.log(.info, category: .app, message: "System woke from sleep, checking destination...")
+
+        // Brief delay to let drives remount
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.checkDestinationAvailability()
+
+            // If drive is connected and we have a pending backup, start it
+            if let self = self,
+               self.isDestinationConnected,
+               self.syncState.pendingBackup,
+               !self.syncState.isLocked {
+                self.logService.log(.info, category: .app, message: "Resuming pending backup after wake...")
+                self.runNow()
+            }
+        }
+    }
+
+    /// Handle system going to sleep.
+    private func handleGoingToSleep() {
+        logService.log(.info, category: .app, message: "System going to sleep...")
+        // Optionally pause or mark backup for resume
+    }
+
+    /// Start periodic timer to check destination availability.
+    private func startDestinationCheckTimer() {
+        destinationCheckTimer?.invalidate()
+
+        // Check every 30 seconds for destination availability
+        destinationCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.checkDestinationAvailability()
         }
     }
 
@@ -628,24 +709,34 @@ final class AppState: ObservableObject {
             backupState = .backing(progress: progress)
         }
 
+        // If backup is actively running, the drive must be connected
+        // This fixes stale "Drive not connected" status after wake from sleep
+        if !isDestinationConnected && destinationPath != nil {
+            checkDestinationAvailability()
+        }
+
         // Track file activity using destination path
         guard let currentFile = progress.currentFileName,
               let destPath = destinationPath else { return }
 
+        // Determine status based on filename prefix (set by BackupEngine)
+        let status = determineFileStatus(from: currentFile, progress: progress)
+        let cleanFileName = cleanFileNameForDisplay(currentFile)
+
         // If we moved to a new file, mark the previous one as copied
-        if let lastFile = lastProcessedFile, lastFile != currentFile {
-            let (lastName, lastDestFolder) = splitFilePathForDestination(lastFile, destRoot: destPath)
+        if let lastFile = lastProcessedFile, cleanFileNameForDisplay(lastFile) != cleanFileName {
+            let (lastName, lastDestFolder) = splitFilePathForDestination(cleanFileNameForDisplay(lastFile), destRoot: destPath)
             updateFileActivity(fileName: lastName, destinationFolder: lastDestFolder, status: .copied)
         }
 
-        // Add new file as copying (if not already tracked)
-        if currentFile != lastProcessedFile {
-            let (fileName, destFolder) = splitFilePathForDestination(currentFile, destRoot: destPath)
+        // Add new file (if not already tracked) or update existing
+        if cleanFileNameForDisplay(lastProcessedFile ?? "") != cleanFileName {
+            let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
 
             // Try to get file size from source
             var fileSize: Int64? = nil
             if let source = sourcePath {
-                let sourceFilePath = (source as NSString).appendingPathComponent(currentFile)
+                let sourceFilePath = (source as NSString).appendingPathComponent(cleanFileName)
                 if let attrs = try? FileManager.default.attributesOfItem(atPath: sourceFilePath),
                    let size = attrs[.size] as? Int64 {
                     fileSize = size
@@ -656,10 +747,45 @@ final class AppState: ObservableObject {
                 fileName: fileName,
                 destinationFolder: destFolder,
                 fileSize: fileSize,
-                status: .copying
+                status: status
             ))
             lastProcessedFile = currentFile
+        } else {
+            // Update status of current file (e.g., progress percentage)
+            let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
+            updateFileActivity(fileName: fileName, destinationFolder: destFolder, status: status)
+            lastProcessedFile = currentFile
         }
+    }
+
+    /// Determine file activity status based on progress info.
+    private func determineFileStatus(from fileName: String, progress: BackupProgress) -> FileActivityStatus {
+        // BackupEngine prefixes with ⬇ for downloads
+        if fileName.hasPrefix("⬇") {
+            // Calculate download progress if available
+            let downloadProgress = progress.totalFiles > 0 ? Double(progress.completedFiles) / Double(progress.totalFiles) : 0.5
+            return .downloading(progress: downloadProgress)
+        }
+
+        // Check if we're still in scanning phase
+        if fileName.lowercased().contains("scanning") || fileName.lowercased().contains("indexing") {
+            return .indexing
+        }
+
+        // Default to copying with indeterminate progress
+        return .copying(progress: nil)
+    }
+
+    /// Remove status prefixes from file name for display.
+    private func cleanFileNameForDisplay(_ fileName: String) -> String {
+        var clean = fileName
+        // Remove download prefix
+        if clean.hasPrefix("⬇ ") {
+            clean = String(clean.dropFirst(2))
+        } else if clean.hasPrefix("⬇") {
+            clean = String(clean.dropFirst(1))
+        }
+        return clean
     }
 
     /// Split a relative file path into file name and destination folder path.
@@ -672,10 +798,10 @@ final class AppState: ObservableObject {
         return (fileName, destFolder)
     }
 
-    /// Mark all "copying" activities as "copied" when backup completes.
+    /// Mark all active activities as "copied" when backup completes.
     func finalizeFileActivities() {
         for (index, activity) in recentFileActivities.enumerated() {
-            if case .copying = activity.status {
+            if activity.status.isActive {
                 recentFileActivities[index] = FileActivity(
                     fileName: activity.fileName,
                     destinationFolder: activity.destinationFolder,
@@ -692,8 +818,17 @@ final class AppState: ObservableObject {
     /// Sign out and reset.
     func signOut() async {
         pollingTimer?.invalidate()
+        destinationCheckTimer?.invalidate()
         fileWatcher.stopWatching()
         driveMonitor.stopMonitoring()
+
+        // Remove sleep/wake observers
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        if let observer = sleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
 
         await authService.logout()
 
