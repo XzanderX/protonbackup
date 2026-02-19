@@ -49,6 +49,10 @@ final class AppState: ObservableObject {
     private var wakeObserver: NSObjectProtocol?
     private var sleepObserver: NSObjectProtocol?
 
+    /// Observers for volume mount/unmount notifications.
+    private var volumeMountObserver: NSObjectProtocol?
+    private var volumeUnmountObserver: NSObjectProtocol?
+
     // MARK: - Initialization
 
     init() {
@@ -538,7 +542,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Sleep/Wake handling
 
-    /// Set up observers for system sleep and wake events.
+    /// Set up observers for system sleep/wake and volume mount/unmount events.
     private func setupSleepWakeObservers() {
         let workspace = NSWorkspace.shared
         let notificationCenter = workspace.notificationCenter
@@ -561,8 +565,26 @@ final class AppState: ObservableObject {
             self?.handleGoingToSleep()
         }
 
+        // Handle volume mount - this is more reliable than DiskArbitration for some drives
+        volumeMountObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didMountNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleVolumeMounted(notification)
+        }
+
+        // Handle volume unmount
+        volumeUnmountObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didUnmountNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleVolumeUnmounted(notification)
+        }
+
         // Also start a periodic check timer for destination availability
-        // This catches cases where DiskArbitration callbacks are missed
+        // This catches cases where callbacks are missed
         startDestinationCheckTimer()
     }
 
@@ -589,6 +611,60 @@ final class AppState: ObservableObject {
     private func handleGoingToSleep() {
         logService.log(.info, category: .app, message: "System going to sleep...")
         // Optionally pause or mark backup for resume
+    }
+
+    /// Handle volume mounted event.
+    private func handleVolumeMounted(_ notification: Notification) {
+        guard let volumePath = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else {
+            return
+        }
+
+        logService.log(.info, category: .driveMonitor,
+                       message: "Volume mounted (NSWorkspace): \(volumePath.lastPathComponent)")
+
+        // Brief delay to ensure volume is fully ready
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+
+            let wasDisconnected = !self.isDestinationConnected
+            self.checkDestinationAvailability()
+
+            // Auto-start backup when destination connects
+            if self.isDestinationConnected && wasDisconnected {
+                self.logService.log(.info, category: .driveMonitor,
+                                    message: "Backup destination connected, starting backup...")
+
+                if self.config.notificationsEnabled {
+                    self.notificationService.notifyDestinationConnected(volumeName: volumePath.lastPathComponent)
+                }
+
+                // Auto-start backup if setup is complete and not already running
+                if self.config.setupCompleted && !self.syncState.isLocked {
+                    self.runNow()
+                }
+            }
+        }
+    }
+
+    /// Handle volume unmounted event.
+    private func handleVolumeUnmounted(_ notification: Notification) {
+        guard let volumePath = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else {
+            return
+        }
+
+        logService.log(.info, category: .driveMonitor,
+                       message: "Volume unmounted (NSWorkspace): \(volumePath.lastPathComponent)")
+
+        // Check if our destination is still available
+        let wasConnected = isDestinationConnected
+        checkDestinationAvailability()
+
+        // Cancel backup if destination was disconnected
+        if wasConnected && !isDestinationConnected && syncState.isLocked {
+            logService.log(.info, category: .driveMonitor,
+                           message: "Backup destination ejected, cancelling backup...")
+            cancelBackup()
+        }
     }
 
     /// Start periodic timer to check destination availability.
@@ -822,12 +898,19 @@ final class AppState: ObservableObject {
         fileWatcher.stopWatching()
         driveMonitor.stopMonitoring()
 
-        // Remove sleep/wake observers
+        // Remove sleep/wake and volume observers
+        let notificationCenter = NSWorkspace.shared.notificationCenter
         if let observer = wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            notificationCenter.removeObserver(observer)
         }
         if let observer = sleepObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            notificationCenter.removeObserver(observer)
+        }
+        if let observer = volumeMountObserver {
+            notificationCenter.removeObserver(observer)
+        }
+        if let observer = volumeUnmountObserver {
+            notificationCenter.removeObserver(observer)
         }
 
         await authService.logout()
