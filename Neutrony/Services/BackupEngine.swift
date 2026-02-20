@@ -1374,10 +1374,15 @@ final class BackupEngine {
                     filesUpdated += 1
                     badgeService.markFileComplete(relativePath: relPath)
 
-                    // Offload if requested
+                    // Offload (evict) file back to cloud-only if requested
+                    // This restores the file to its original cloud-only state
                     if offloadAfterBackup {
-                        if syncVerifier.evictFile(at: fileURL.path) {
+                        if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
+                        } else {
+                            let warn = "Could not offload \(relPath) - file remains downloaded locally"
+                            errors.append(warn)
+                            logService.log(.warning, category: .backup, message: warn, filePath: relPath)
                         }
                     }
 

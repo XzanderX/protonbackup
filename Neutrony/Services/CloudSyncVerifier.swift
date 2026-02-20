@@ -226,24 +226,48 @@ final class CloudSyncVerifier {
     /// This respects the user's Proton Drive settings.
     func evictFile(at path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
+        let fileName = (path as NSString).lastPathComponent
 
         do {
             // Check if file is cloud-managed
             let values = try url.resourceValues(forKeys: [.isUbiquitousItemKey])
             guard values.isUbiquitousItem == true else {
                 // Not a cloud-managed file, can't evict
+                logService.log(.debug, category: .sync, message: "Cannot evict \(fileName): not cloud-managed")
                 return false
             }
 
             // Evict the file (make it cloud-only)
             try fileManager.evictUbiquitousItem(at: url)
-            logService.log(.debug, category: .sync, message: "Evicted file: \((path as NSString).lastPathComponent)")
+            logService.log(.debug, category: .sync, message: "Evicted file: \(fileName)")
             return true
         } catch {
             logService.log(.debug, category: .sync,
-                           message: "Could not evict \((path as NSString).lastPathComponent): \(error.localizedDescription)")
+                           message: "Could not evict \(fileName): \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Evict a file with retry logic.
+    /// The FileProvider may need time after a copy before accepting eviction.
+    func evictFileWithRetry(at path: String, maxAttempts: Int = 3, delaySeconds: Double = 1.0) async -> Bool {
+        let fileName = (path as NSString).lastPathComponent
+
+        for attempt in 1...maxAttempts {
+            if evictFile(at: path) {
+                return true
+            }
+
+            if attempt < maxAttempts {
+                logService.log(.debug, category: .sync,
+                               message: "Eviction attempt \(attempt) failed for \(fileName), retrying...")
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            }
+        }
+
+        logService.log(.warning, category: .sync,
+                       message: "Failed to evict \(fileName) after \(maxAttempts) attempts - file remains downloaded")
+        return false
     }
 
     /// Check if a file is cloud-only (not downloaded locally).

@@ -115,7 +115,7 @@ struct BackupConfiguration: Codable, Equatable {
         rcloneConfigured: false,
         requireCloudSync: true,
         onDemandDownload: true,
-        offloadAfterBackup: false,
+        offloadAfterBackup: true,
         snapshotMode: .disabled,
         snapshotRetentionDays: 30,
         setupCompleted: false
