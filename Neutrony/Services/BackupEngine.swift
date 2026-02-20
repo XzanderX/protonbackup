@@ -9,6 +9,19 @@ struct CachedFileInfo: Codable {
     let isCloudOnly: Bool
     let size: Int64
     let modTime: Date?
+    /// Whether this file should be offloaded after backup.
+    /// Set to true when file was originally cloud-only, persists until successful eviction.
+    let shouldOffload: Bool
+
+    init(relPath: String, isDirectory: Bool, isCloudOnly: Bool, size: Int64, modTime: Date?, shouldOffload: Bool? = nil) {
+        self.relPath = relPath
+        self.isDirectory = isDirectory
+        self.isCloudOnly = isCloudOnly
+        self.size = size
+        self.modTime = modTime
+        // Default: shouldOffload = isCloudOnly (cloud-only files should be offloaded)
+        self.shouldOffload = shouldOffload ?? isCloudOnly
+    }
 }
 
 /// Cache of the source file structure to speed up subsequent backups
@@ -51,6 +64,25 @@ actor ScanResultsCollector {
     private(set) var totalFilesFound: Int = 0
     private(set) var filesSkipped: Int = 0
     private(set) var directoriesScanned: Int = 0
+
+    /// Map of relPath -> shouldOffload from previous cache.
+    /// Used to preserve offload status for files that failed to evict.
+    private var previousShouldOffload: [String: Bool] = [:]
+
+    /// Set the previous shouldOffload map from a loaded cache.
+    func setPreviousShouldOffload(_ map: [String: Bool]) {
+        previousShouldOffload = map
+    }
+
+    /// Check if a file should be offloaded based on current scan and previous cache.
+    private func shouldFileBeOffloaded(relPath: String, isCurrentlyCloudOnly: Bool) -> Bool {
+        // If currently cloud-only, it should be offloaded
+        if isCurrentlyCloudOnly {
+            return true
+        }
+        // If previously marked for offload (was cloud-only but eviction failed), preserve that
+        return previousShouldOffload[relPath] ?? false
+    }
 
     func addLocalFile(_ file: (url: URL, relPath: String)) {
         localFiles.append(file)
@@ -116,13 +148,17 @@ actor ScanResultsCollector {
                 foldersToCreate.insert(destDirPath)
                 cachedDirectories.append(item.relPath)
             } else {
+                // Determine shouldOffload: preserve from previous cache or set based on current cloud-only status
+                let shouldOffload = shouldFileBeOffloaded(relPath: item.relPath, isCurrentlyCloudOnly: item.isCloudOnly)
+
                 // Cache file info
                 cachedFileInfos.append(CachedFileInfo(
                     relPath: item.relPath,
                     isDirectory: false,
                     isCloudOnly: item.isCloudOnly,
                     size: item.localSize,
-                    modTime: nil
+                    modTime: nil,
+                    shouldOffload: shouldOffload
                 ))
 
                 // Determine if backup needed
@@ -166,13 +202,15 @@ actor ScanResultsCollector {
                 // Track all source files for deletion calculation
                 allSourceRelPaths.insert(item.relPath)
 
-                // Cache file info
+                // Cache file info - preserve shouldOffload status across scans
+                let shouldOffload = shouldFileBeOffloaded(relPath: item.relPath, isCurrentlyCloudOnly: item.isCloudOnly)
                 cachedFileInfos.append(CachedFileInfo(
                     relPath: item.relPath,
                     isDirectory: false,
                     isCloudOnly: item.isCloudOnly,
                     size: item.localSize,
-                    modTime: nil
+                    modTime: nil,
+                    shouldOffload: shouldOffload
                 ))
 
                 // Determine if backup needed
@@ -388,6 +426,30 @@ final class BackupEngine {
         } catch {
             logService.log(.warning, category: .backup, message: "Failed to load cache: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// Load the shouldOffload map from any existing cache (even if stale).
+    /// This ensures we don't lose track of files that need offloading across multiple backups.
+    private func loadPreviousShouldOffload(backupRoot: String) -> [String: Bool] {
+        let path = cachePath(for: backupRoot)
+        guard let data = FileManager.default.contents(atPath: path) else {
+            return [:]
+        }
+
+        do {
+            let cache = try JSONDecoder().decode(FileStructureCache.self, from: data)
+            var map: [String: Bool] = [:]
+            for file in cache.files {
+                map[file.relPath] = file.shouldOffload
+            }
+            if !map.isEmpty {
+                logService.log(.debug, category: .backup,
+                               message: "Loaded shouldOffload status for \(map.filter { $0.value }.count) files")
+            }
+            return map
+        } catch {
+            return [:]
         }
     }
 
@@ -1005,6 +1067,10 @@ final class BackupEngine {
                            message: "Using cached structure (\(cache.files.count) files, \(cache.directories.count) dirs)")
             usedCache = true
 
+            // Copy cache data for later updates (e.g., after eviction)
+            cachedFileInfos = cache.files
+            cachedDirectories = cache.directories
+
             // Create all directories from cache
             for dirPath in cache.directories {
                 let destDirPath = (backupRoot as NSString).appendingPathComponent(dirPath)
@@ -1081,6 +1147,11 @@ final class BackupEngine {
             let collector = ScanResultsCollector()
             let copyQueue = FileCopyQueue()
             let tracker = ConcurrentBackupTracker()
+
+            // Load previous shouldOffload status to preserve across scans
+            // This ensures files that failed to evict will be retried
+            let previousShouldOffloadMap = loadPreviousShouldOffload(backupRoot: backupRoot)
+            await collector.setPreviousShouldOffload(previousShouldOffloadMap)
 
             // Preload folders from the cache path if any were created
             if !foldersAlreadyCreated.isEmpty {
@@ -1329,6 +1400,9 @@ final class BackupEngine {
         // PHASE 1: Download cloud-only files (this is when downloads start)
         // Local files were already copied during the scan phase
         // ============================================
+        // Track successfully evicted files to update cache
+        var evictedFiles = Set<String>()
+
         if !cloudOnlyFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
                            message: "Phase 1: Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
@@ -1379,10 +1453,12 @@ final class BackupEngine {
                     if offloadAfterBackup {
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
+                            evictedFiles.insert(relPath)  // Track for cache update
                         } else {
                             let warn = "Could not offload \(relPath) - file remains downloaded locally"
                             errors.append(warn)
                             logService.log(.warning, category: .backup, message: warn, filePath: relPath)
+                            // File stays in shouldOffload list for retry on next backup
                         }
                     }
 
@@ -1398,6 +1474,40 @@ final class BackupEngine {
 
             logService.log(.info, category: .backup,
                            message: "Phase 1 complete: \(filesDownloaded) cloud files downloaded")
+        }
+
+        // ============================================
+        // RETRY EVICTION: For files that failed to evict on previous backups
+        // These files have shouldOffload=true but weren't processed in Phase 1
+        // ============================================
+        if offloadAfterBackup {
+            // Find files that need eviction but weren't in this Phase 1
+            let phase1RelPaths = Set(cloudOnlyFilesToBackup.map { $0.relPath })
+            let filesToRetryEviction = cachedFileInfos.filter { info in
+                info.shouldOffload &&
+                !info.isCloudOnly &&  // File is currently downloaded
+                !phase1RelPaths.contains(info.relPath)  // Wasn't processed in Phase 1
+            }
+
+            if !filesToRetryEviction.isEmpty {
+                logService.log(.info, category: .backup,
+                               message: "Retrying eviction for \(filesToRetryEviction.count) files from previous backup...")
+
+                for fileInfo in filesToRetryEviction {
+                    let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
+                    if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
+                        filesOffloaded += 1
+                        evictedFiles.insert(fileInfo.relPath)
+                        logService.log(.debug, category: .backup,
+                                       message: "Retry eviction succeeded: \(fileInfo.relPath)")
+                    }
+                }
+
+                if !evictedFiles.isEmpty {
+                    logService.log(.info, category: .backup,
+                                   message: "Eviction retry complete: \(evictedFiles.count) files offloaded")
+                }
+            }
         }
 
         // ============================================
@@ -1477,6 +1587,31 @@ final class BackupEngine {
             updatedDestSizes.removeValue(forKey: relPath)
         }
         saveDestCache(backupRoot: backupRoot, fileSizes: updatedDestSizes)
+
+        // Update structure cache with eviction status
+        // Files that were successfully evicted no longer need shouldOffload
+        if !evictedFiles.isEmpty && !cachedFileInfos.isEmpty {
+            var updatedCachedInfos: [CachedFileInfo] = []
+            for info in cachedFileInfos {
+                if evictedFiles.contains(info.relPath) {
+                    // Successfully evicted - update to shouldOffload = false
+                    updatedCachedInfos.append(CachedFileInfo(
+                        relPath: info.relPath,
+                        isDirectory: info.isDirectory,
+                        isCloudOnly: true,  // File is now cloud-only again
+                        size: 0,  // Cloud-only has size 0
+                        modTime: info.modTime,
+                        shouldOffload: false  // No longer needs offload
+                    ))
+                } else {
+                    updatedCachedInfos.append(info)
+                }
+            }
+            // Save updated cache
+            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: updatedCachedInfos, directories: cachedDirectories)
+            logService.log(.info, category: .backup,
+                           message: "Updated cache: \(evictedFiles.count) files marked as evicted")
+        }
 
         // Mark backup as complete in Finder
         badgeService.backupCompleted(destinationPath: destinationPath)
