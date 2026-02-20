@@ -1451,9 +1451,11 @@ final class BackupEngine {
                     // Offload (evict) file back to cloud-only if requested
                     // This restores the file to its original cloud-only state
                     if offloadAfterBackup {
+                        logService.log(.debug, category: .backup, message: "Attempting to offload: \(relPath)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
+                            logService.log(.info, category: .backup, message: "Offloaded to cloud: \(relPath)")
                         } else {
                             let warn = "Could not offload \(relPath) - file remains downloaded locally"
                             errors.append(warn)

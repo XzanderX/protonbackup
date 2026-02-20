@@ -223,44 +223,62 @@ final class CloudSyncVerifier {
 
     /// Evict (offload) a file to free up local space.
     /// The file will become cloud-only and can be downloaded again later.
-    /// This respects the user's Proton Drive settings.
+    /// Works with any FileProvider extension including Proton Drive.
     func evictFile(at path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         let fileName = (path as NSString).lastPathComponent
 
         do {
-            // Check if file is cloud-managed
-            let values = try url.resourceValues(forKeys: [.isUbiquitousItemKey])
-            guard values.isUbiquitousItem == true else {
-                // Not a cloud-managed file, can't evict
-                logService.log(.debug, category: .sync, message: "Cannot evict \(fileName): not cloud-managed")
-                return false
-            }
-
-            // Evict the file (make it cloud-only)
+            // Try to evict using the FileManager API
+            // This works for any FileProvider extension, not just iCloud
             try fileManager.evictUbiquitousItem(at: url)
             logService.log(.debug, category: .sync, message: "Evicted file: \(fileName)")
             return true
-        } catch {
-            logService.log(.debug, category: .sync,
-                           message: "Could not evict \(fileName): \(error.localizedDescription)")
+        } catch let error as NSError {
+            // Check specific error codes
+            if error.domain == NSCocoaErrorDomain {
+                switch error.code {
+                case NSFeatureUnsupportedError:
+                    // File is not managed by a FileProvider that supports eviction
+                    logService.log(.debug, category: .sync,
+                                   message: "Cannot evict \(fileName): not a cloud-managed file")
+                case NSFileNoSuchFileError:
+                    // File doesn't exist
+                    logService.log(.debug, category: .sync,
+                                   message: "Cannot evict \(fileName): file not found")
+                case NSFileWriteNoPermissionError:
+                    // No permission to modify
+                    logService.log(.debug, category: .sync,
+                                   message: "Cannot evict \(fileName): no permission")
+                default:
+                    logService.log(.debug, category: .sync,
+                                   message: "Could not evict \(fileName): \(error.localizedDescription) (code: \(error.code))")
+                }
+            } else {
+                logService.log(.debug, category: .sync,
+                               message: "Could not evict \(fileName): \(error.localizedDescription)")
+            }
             return false
         }
     }
 
     /// Evict a file with retry logic.
-    /// The FileProvider may need time after a copy before accepting eviction.
-    func evictFileWithRetry(at path: String, maxAttempts: Int = 3, delaySeconds: Double = 1.0) async -> Bool {
+    /// The FileProvider may need time after a download/copy before accepting eviction.
+    func evictFileWithRetry(at path: String, maxAttempts: Int = 5, delaySeconds: Double = 2.0) async -> Bool {
         let fileName = (path as NSString).lastPathComponent
 
         for attempt in 1...maxAttempts {
             if evictFile(at: path) {
+                if attempt > 1 {
+                    logService.log(.debug, category: .sync,
+                                   message: "Eviction succeeded on attempt \(attempt) for \(fileName)")
+                }
                 return true
             }
 
             if attempt < maxAttempts {
                 logService.log(.debug, category: .sync,
-                               message: "Eviction attempt \(attempt) failed for \(fileName), retrying...")
+                               message: "Eviction attempt \(attempt)/\(maxAttempts) failed for \(fileName), waiting \(delaySeconds)s...")
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
         }
