@@ -66,9 +66,21 @@ actor ScanResultsCollector {
     private(set) var filesSkipped: Int = 0
     private(set) var directoriesScanned: Int = 0
 
+    /// Destination data — set once via configure(), read many times without copying
+    private var destFileSizes: [String: Int64] = [:]
+    private var destModTimes: [String: TimeInterval] = [:]
+    private var backupRoot: String = ""
+
     /// Map of relPath -> shouldOffload from previous cache.
     /// Used to preserve offload status for files that failed to evict.
     private var previousShouldOffload: [String: Bool] = [:]
+
+    /// Configure destination data once (avoids copying large dicts on every call).
+    func configure(destFileSizes: [String: Int64], destModTimes: [String: TimeInterval], backupRoot: String) {
+        self.destFileSizes = destFileSizes
+        self.destModTimes = destModTimes
+        self.backupRoot = backupRoot
+    }
 
     /// Set the previous shouldOffload map from a loaded cache.
     func setPreviousShouldOffload(_ map: [String: Bool]) {
@@ -139,10 +151,7 @@ actor ScanResultsCollector {
 
     /// Batch add multiple items from a directory scan
     func addBatchResults(
-        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)],
-        destFileSizes: [String: Int64],
-        destModTimes: [String: TimeInterval],
-        backupRoot: String
+        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)]
     ) {
         for item in items {
             if item.isDir {
@@ -193,10 +202,7 @@ actor ScanResultsCollector {
 
     /// Batch add with immediate copy queue support - returns local files for immediate copying
     func addBatchResultsWithCopyQueue(
-        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)],
-        destFileSizes: [String: Int64],
-        destModTimes: [String: TimeInterval],
-        backupRoot: String
+        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)]
     ) -> [(sourceURL: URL, destPath: String, relPath: String)] {
         var localFilesForCopy: [(sourceURL: URL, destPath: String, relPath: String)] = []
 
@@ -1209,6 +1215,9 @@ final class BackupEngine {
             let copyQueue = FileCopyQueue()
             let tracker = ConcurrentBackupTracker()
 
+            // Configure destination data once to avoid copying large dicts on every actor call
+            await collector.configure(destFileSizes: destFileSizes, destModTimes: destModTimes, backupRoot: backupRoot)
+
             // Load previous shouldOffload status to preserve across scans
             // This ensures files that failed to evict will be retried
             let previousShouldOffloadMap = loadPreviousShouldOffload(backupRoot: backupRoot)
@@ -1291,10 +1300,7 @@ final class BackupEngine {
 
                                 // Use the new method that returns local files for immediate copying
                                 let localFilesForCopy = await collector.addBatchResultsWithCopyQueue(
-                                    items: items,
-                                    destFileSizes: destFileSizes,
-                                    destModTimes: destModTimes,
-                                    backupRoot: backupRoot
+                                    items: items
                                 )
 
                                 // Queue local files for immediate copying
