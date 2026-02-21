@@ -1285,6 +1285,16 @@ final class BackupEngine {
                                 await tracker.recordParentEnsured(parentPath)
                             }
 
+                            // Re-check file status before copying (status may have changed since scan)
+                            let currentSize = (try? FileManager.default.attributesOfItem(atPath: file.sourceURL.path)[.size] as? Int64) ?? 0
+                            if currentSize == 0 {
+                                // File is now cloud-only - skip, will be handled in Phase 1
+                                logService.log(.debug, category: .backup,
+                                               message: "Skipping \(file.relPath) - became cloud-only since scan")
+                                await copyQueue.incrementProcessed()
+                                continue
+                            }
+
                             // Mark file as syncing
                             badgeService.markFileSyncing(relativePath: file.relPath)
 
@@ -1293,7 +1303,6 @@ final class BackupEngine {
                                 await tracker.recordFileUpdated()
                                 badgeService.markFileComplete(relativePath: file.relPath)
                                 // Phase 0: Local files stay local - no offloading
-                                // Offloading only happens in Phase 1 for files that were cloud-only
                             } catch {
                                 let desc = "Failed to backup \(file.relPath): \(error.localizedDescription)"
                                 await tracker.recordError(desc)
@@ -1438,19 +1447,28 @@ final class BackupEngine {
                 do {
                     let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
 
-                    // Download the file
-                    logService.log(.debug, category: .backup, message: "Downloading: \(relPath)")
-                    let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
+                    // Re-check file status before downloading (status may have changed since scan)
+                    let currentSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+                    let needsDownload = (currentSize == 0)
 
-                    if !downloaded {
-                        // Keep the placeholder, log warning
-                        errors.append("Download timeout: \(relPath) (placeholder kept)")
-                        logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
-                        badgeService.markFileError(relativePath: relPath)
-                        cloudCompleted += 1
-                        continue
+                    if needsDownload {
+                        // File is still cloud-only - download it
+                        logService.log(.debug, category: .backup, message: "Downloading: \(relPath)")
+                        let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
+
+                        if !downloaded {
+                            // Keep the placeholder, log warning
+                            errors.append("Download timeout: \(relPath) (placeholder kept)")
+                            logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
+                            badgeService.markFileError(relativePath: relPath)
+                            cloudCompleted += 1
+                            continue
+                        }
+                        filesDownloaded += 1
+                    } else {
+                        // File is now local (was downloaded since scan) - just copy it
+                        logService.log(.debug, category: .backup, message: "File already local (was cloud-only at scan): \(relPath)")
                     }
-                    filesDownloaded += 1
 
                     // Mark as syncing during copy
                     badgeService.markFileSyncing(relativePath: relPath)
