@@ -137,6 +137,11 @@ actor ScanResultsCollector {
         return placeholdersToCreate.count
     }
 
+    /// Get all progress-related values in a single actor hop
+    func getProgressSnapshot() -> (dirsScanned: Int, filesFound: Int, filesSkipped: Int) {
+        return (directoriesScanned, totalFilesFound, filesSkipped)
+    }
+
     /// Extract items for flushing and clear internal buffers
     func extractForFlush() -> (
         folders: Set<String>,
@@ -309,8 +314,8 @@ actor FileCopyQueue {
         filesProcessed += 1
     }
 
-    func getStats() -> (queued: Int, processed: Int, pending: Int) {
-        return (filesQueued, filesProcessed, queue.count)
+    func getStats() -> (queued: Int, processed: Int, currentFile: String?) {
+        return (filesQueued, filesProcessed, currentRelPath)
     }
 }
 
@@ -403,13 +408,13 @@ final class BackupEngine {
     private let maxRetryAttempts = 3
 
     /// Concurrency limit for parallel file operations
-    private let maxConcurrentOperations = 8
+    private let maxConcurrentOperations = 4
 
     /// Concurrency limit for parallel cloud file downloads in Phase 1
     private let maxConcurrentDownloads = 4
 
     /// Concurrency limit for parallel directory scanning
-    private let maxConcurrentScans = 16
+    private let maxConcurrentScans = 4
 
     /// Files to skip during backup - organized for O(1) lookups where possible
     private let skipExactNames: Set<String> = [
@@ -1319,6 +1324,7 @@ final class BackupEngine {
                             }
 
                             await dirQueue.finishWorker()
+                            await Task.yield()  // Prevent thread pool starvation
                         }
                     }
                 }
@@ -1376,45 +1382,43 @@ final class BackupEngine {
                             }
 
                             await copyQueue.incrementProcessed()
+                            await Task.yield()  // Prevent thread pool starvation
                         }
                     }
                 }
 
-                // Progress update task
+                // Progress update task — uses batched actor calls to minimize contention
                 group.addTask { [self] in
                     var lastDirs = 0
                     var lastFound = 0
                     var lastCopied = 0
                     while true {
-                        try? await Task.sleep(nanoseconds: 200_000_000) // Update every 200ms
+                        try? await Task.sleep(nanoseconds: 500_000_000) // Update every 500ms
 
-                        let dirsScanned = await collector.directoriesScanned
-                        let filesFound = await collector.totalFilesFound
-                        let (queued, copied, _) = await copyQueue.getStats()
+                        // Batch actor calls: one hop each for collector, copyQueue, dirQueue
+                        let snapshot = await collector.getProgressSnapshot()
+                        let (queued, copied, currentFile) = await copyQueue.getStats()
 
                         // Exit when scan is done and all queued files are copied
                         let scanRunning = await dirQueue.hasWork()
                         if !scanRunning && queued == copied { break }
 
                         let elapsed = Date().timeIntervalSince(scanStartTime)
-                        let scanRate = elapsed > 0 ? Double(dirsScanned) / elapsed : 0
+                        let scanRate = elapsed > 0 ? Double(snapshot.dirsScanned) / elapsed : 0
 
                         // Only log when values actually change
-                        if dirsScanned != lastDirs || filesFound != lastFound || copied != lastCopied {
+                        if snapshot.dirsScanned != lastDirs || snapshot.filesFound != lastFound || copied != lastCopied {
                             logService.log(.debug, category: .backup,
-                                           message: "[Phase0] Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
-                            lastDirs = dirsScanned
-                            lastFound = filesFound
+                                           message: "[Phase0] Scan+Copy: \(snapshot.dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(snapshot.filesFound) found, \(copied)/\(queued) copied")
+                            lastDirs = snapshot.dirsScanned
+                            lastFound = snapshot.filesFound
                             lastCopied = copied
                         }
 
                         // Report the current file being copied (or scanning status if no file yet)
-                        // Include skipped files (already up-to-date) in the completed count
-                        let skipped = await collector.filesSkipped
-                        let totalScanned = filesFound + skipped
-                        let totalCompleted = copied + skipped
+                        let totalScanned = snapshot.filesFound + snapshot.filesSkipped
+                        let totalCompleted = copied + snapshot.filesSkipped
 
-                        let currentFile = await copyQueue.currentRelPath
                         let displayName = currentFile ?? "Scanning & copying: \(totalScanned) found, \(totalCompleted) done..."
                         let scanProgress = BackupProgress(
                             totalFiles: totalScanned,
