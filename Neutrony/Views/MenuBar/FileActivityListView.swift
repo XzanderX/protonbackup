@@ -151,6 +151,16 @@ struct FileActivityRow: View {
             Image(systemName: "checkmark")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
+        case .offloading:
+            // Indeterminate upload indicator
+            Circle()
+                .trim(from: 0, to: 0.25)
+                .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        case .offloaded:
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 12))
+                .foregroundColor(.blue)
         case .skipped:
             EmptyView()
         case .error:

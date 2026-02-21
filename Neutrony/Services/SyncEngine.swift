@@ -67,6 +67,7 @@ final class SyncEngine {
             logService.log(.info, category: .sync, message: "No changes detected")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: remoteFiles.count,
+                filesDownloaded: 0, filesOffloaded: 0,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
@@ -116,6 +117,8 @@ final class SyncEngine {
             filesUpdated: filesUpdated,
             filesDeleted: filesDeleted,
             filesSkipped: filesSkipped,
+            filesDownloaded: 0,
+            filesOffloaded: 0,
             errors: errors,
             startTime: startTime,
             endTime: Date()
