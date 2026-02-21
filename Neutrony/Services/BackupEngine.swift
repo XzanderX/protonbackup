@@ -347,6 +347,27 @@ actor ConcurrentBackupTracker {
     }
 }
 
+/// Thread-safe tracker for Phase 1 concurrent download+copy+evict operations
+private actor Phase1Tracker {
+    private(set) var filesUpdated = 0
+    private(set) var filesDownloaded = 0
+    private(set) var filesOffloaded = 0
+    private(set) var cloudCompleted = 0
+    private(set) var errors: [String] = []
+    private(set) var evictedFiles = Set<String>()
+
+    func recordUpdated() { filesUpdated += 1 }
+    func recordDownloaded() { filesDownloaded += 1 }
+    func recordOffloaded() { filesOffloaded += 1 }
+    func recordCompleted() { cloudCompleted += 1 }
+    func recordError(_ msg: String) { errors.append(msg) }
+    func recordEvicted(_ relPath: String) {
+        evictedFiles.insert(relPath)
+        filesOffloaded += 1
+    }
+    func getCompleted() -> Int { cloudCompleted }
+}
+
 /// Manages copying files from Proton Drive to the external backup destination.
 /// Supports two modes:
 /// 1. Local folder mode: Copies from the Proton Drive app's local sync folder
@@ -366,6 +387,9 @@ final class BackupEngine {
 
     /// Concurrency limit for parallel file operations
     private let maxConcurrentOperations = 8
+
+    /// Concurrency limit for parallel cloud file downloads in Phase 1
+    private let maxConcurrentDownloads = 4
 
     /// Concurrency limit for parallel directory scanning
     private let maxConcurrentScans = 16
@@ -1433,6 +1457,7 @@ final class BackupEngine {
         // ============================================
         // PHASE 1: Download cloud-only files (this is when downloads start)
         // Local files were already copied during the scan phase
+        // Downloads run in parallel (up to maxConcurrentDownloads) for throughput
         // ============================================
         // Track successfully evicted files to update cache
         var evictedFiles = Set<String>()
@@ -1440,7 +1465,7 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "========== PHASE 1 START ==========")
         logService.log(.info, category: .backup,
-                       message: "[Phase1] \(cloudOnlyFilesToBackup.count) cloud-only files, offloadAfterBackup=\(offloadAfterBackup)")
+                       message: "[Phase1] \(cloudOnlyFilesToBackup.count) cloud-only files, offloadAfterBackup=\(offloadAfterBackup), concurrency=\(maxConcurrentDownloads)")
 
         // Log first few files for debugging
         if !cloudOnlyFilesToBackup.isEmpty {
@@ -1450,120 +1475,117 @@ final class BackupEngine {
             logService.log(.info, category: .backup,
                            message: "[Phase1] Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
 
-            for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
-                // Check for pause
-                while pauseChecker?() == true {
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                }
+            let phase1 = Phase1Tracker()
+            let phase1StartTime = Date()
 
-                let currentProgress = BackupProgress(
-                    totalFiles: totalAllFiles,
-                    completedFiles: baseCompleted + cloudCompleted,
-                    currentFileName: "⬇ \(relPath)"
-                )
-                progressHandler(currentProgress)
+            await withTaskGroup(of: Void.self) { group in
+                var inFlight = 0
 
-                // Mark file as downloading in Finder
-                badgeService.markFileDownloading(relativePath: relPath)
-
-                do {
-                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
-
-                    // Re-check file status before downloading (status may have changed since scan)
-                    // Use stat() + st_blocks to detect if file is truly local
-                    // Proton Drive reports cloud size via st_size even for cloud-only files
-                    var p1StatInfo = stat()
-                    let p1StatResult = stat(fileURL.path, &p1StatInfo)
-                    let currentSize: Int64 = (p1StatResult == 0) ? Int64(p1StatInfo.st_size) : 0
-                    let currentBlocks = (p1StatResult == 0) ? p1StatInfo.st_blocks : 0
-                    let needsDownload = (currentSize == 0 || currentBlocks == 0)
-
-                    // Log the size check decision
-                    logService.log(.info, category: .backup,
-                                   message: "[Phase1] CHECK: \(relPath) size=\(currentSize) blocks=\(currentBlocks) needsDownload=\(needsDownload)")
-
-                    // Track if WE downloaded this file (vs user/Proton Drive downloading it)
-                    var weDownloadedIt = false
-
-                    if needsDownload {
-                        // File is still cloud-only - WE need to download it
-                        logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADING: \(relPath)")
-                        let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
-
-                        if !downloaded {
-                            // Keep the placeholder, log warning
-                            errors.append("[Phase1] Download timeout: \(relPath) (placeholder kept)")
-                            logService.log(.warning, category: .backup, message: "[Phase1] Download timeout: \(relPath)")
-                            badgeService.markFileError(relativePath: relPath)
-                            cloudCompleted += 1
-                            continue
-                        }
-                        filesDownloaded += 1
-                        weDownloadedIt = true
-                        logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADED: \(relPath) weDownloadedIt=TRUE")
-                    } else {
-                        // File is now local (user or Proton Drive downloaded it since scan)
-                        // Just copy it, but DON'T offload - respect user's choice to keep it local
-                        logService.log(.info, category: .backup, message: "[Phase1] SKIP_DOWNLOAD: \(relPath) size=\(currentSize) weDownloadedIt=FALSE")
+                for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
+                    // Check for pause before launching new downloads
+                    while pauseChecker?() == true {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
                     }
 
-                    // Mark as syncing during copy
-                    badgeService.markFileSyncing(relativePath: relPath)
+                    // Limit concurrency — wait for one task to finish before spawning another
+                    if inFlight >= maxConcurrentDownloads {
+                        await group.next()
+                        inFlight -= 1
+                    }
 
-                    // Copy the file
-                    try await copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: false, backupRoot: backupRoot)
-                    filesUpdated += 1
-                    badgeService.markFileComplete(relativePath: relPath)
-
-                    // Only offload if WE downloaded the file (restore to original cloud-only state)
-                    // If user/Proton Drive downloaded it, respect their choice and keep it local
-                    logService.log(.info, category: .backup,
-                                   message: "[Phase1] OFFLOAD_CHECK: \(relPath) offloadAfterBackup=\(offloadAfterBackup) weDownloadedIt=\(weDownloadedIt)")
-
-                    if offloadAfterBackup && weDownloadedIt {
-                        // Update progress to show offloading status
-                        let offloadProgress = BackupProgress(
+                    inFlight += 1
+                    group.addTask { [self] in
+                        let completed = await phase1.getCompleted()
+                        let currentProgress = BackupProgress(
                             totalFiles: totalAllFiles,
-                            completedFiles: baseCompleted + cloudCompleted,
-                            currentFileName: "⬆ \(relPath)"
+                            completedFiles: baseCompleted + completed,
+                            currentFileName: "⬇ \(relPath)"
                         )
-                        progressHandler(offloadProgress)
+                        progressHandler(currentProgress)
 
-                        logService.log(.info, category: .backup, message: "[Phase1] EVICTING: \(relPath)")
-                        if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
-                            filesOffloaded += 1
-                            evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: "[Phase1] EVICTED_OK: \(relPath)")
+                        // Mark file as downloading in Finder
+                        badgeService.markFileDownloading(relativePath: relPath)
 
-                            // Update progress to show offloaded status
-                            let offloadedProgress = BackupProgress(
-                                totalFiles: totalAllFiles,
-                                completedFiles: baseCompleted + cloudCompleted,
-                                currentFileName: "☁ \(relPath)"
-                            )
-                            progressHandler(offloadedProgress)
-                        } else {
-                            logService.log(.warning, category: .backup, message: "[Phase1] EVICT_FAILED: \(relPath)")
-                            // File stays in shouldOffload list for retry on next backup
+                        do {
+                            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+
+                            // Re-check file status before downloading (status may have changed since scan)
+                            var p1StatInfo = stat()
+                            let p1StatResult = stat(fileURL.path, &p1StatInfo)
+                            let currentSize: Int64 = (p1StatResult == 0) ? Int64(p1StatInfo.st_size) : 0
+                            let currentBlocks = (p1StatResult == 0) ? p1StatInfo.st_blocks : 0
+                            let needsDownload = (currentSize == 0 || currentBlocks == 0)
+
+                            logService.log(.info, category: .backup,
+                                           message: "[Phase1] CHECK: \(relPath) size=\(currentSize) blocks=\(currentBlocks) needsDownload=\(needsDownload)")
+
+                            var weDownloadedIt = false
+
+                            if needsDownload {
+                                logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADING: \(relPath)")
+                                let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
+
+                                if !downloaded {
+                                    await phase1.recordError("[Phase1] Download timeout: \(relPath) (placeholder kept)")
+                                    logService.log(.warning, category: .backup, message: "[Phase1] Download timeout: \(relPath)")
+                                    badgeService.markFileError(relativePath: relPath)
+                                    await phase1.recordCompleted()
+                                    return
+                                }
+                                await phase1.recordDownloaded()
+                                weDownloadedIt = true
+                                logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADED: \(relPath) weDownloadedIt=TRUE")
+                            } else {
+                                logService.log(.info, category: .backup, message: "[Phase1] SKIP_DOWNLOAD: \(relPath) size=\(currentSize) weDownloadedIt=FALSE")
+                            }
+
+                            badgeService.markFileSyncing(relativePath: relPath)
+
+                            try await copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: false, backupRoot: backupRoot)
+                            await phase1.recordUpdated()
+                            badgeService.markFileComplete(relativePath: relPath)
+
+                            logService.log(.info, category: .backup,
+                                           message: "[Phase1] OFFLOAD_CHECK: \(relPath) offloadAfterBackup=\(offloadAfterBackup) weDownloadedIt=\(weDownloadedIt)")
+
+                            if offloadAfterBackup && weDownloadedIt {
+                                logService.log(.info, category: .backup, message: "[Phase1] EVICTING: \(relPath)")
+                                if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
+                                    await phase1.recordEvicted(relPath)
+                                    logService.log(.info, category: .backup, message: "[Phase1] EVICTED_OK: \(relPath)")
+                                } else {
+                                    logService.log(.warning, category: .backup, message: "[Phase1] EVICT_FAILED: \(relPath)")
+                                }
+                            } else if !offloadAfterBackup {
+                                logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (offloadAfterBackup is disabled)")
+                            } else if !weDownloadedIt {
+                                logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (we didn't download it)")
+                            }
+
+                        } catch {
+                            let desc = "[Phase1] Failed to backup \(relPath): \(error.localizedDescription)"
+                            await phase1.recordError(desc)
+                            logService.log(.error, category: .backup, message: desc, filePath: relPath)
+                            badgeService.markFileError(relativePath: relPath)
                         }
-                    } else if !offloadAfterBackup {
-                        logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (offloadAfterBackup is disabled)")
-                    } else if !weDownloadedIt {
-                        logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (we didn't download it)")
+
+                        await phase1.recordCompleted()
                     }
-
-                } catch {
-                    let desc = "[Phase1] Failed to backup \(relPath): \(error.localizedDescription)"
-                    errors.append(desc)
-                    logService.log(.error, category: .backup, message: desc, filePath: relPath)
-                    badgeService.markFileError(relativePath: relPath)
                 }
-
-                cloudCompleted += 1
             }
 
+            // Merge Phase 1 results back into local variables
+            filesUpdated += await phase1.filesUpdated
+            filesDownloaded += await phase1.filesDownloaded
+            filesOffloaded += await phase1.filesOffloaded
+            cloudCompleted = await phase1.cloudCompleted
+            errors.append(contentsOf: await phase1.errors)
+            evictedFiles = await phase1.evictedFiles
+
+            let phase1Duration = Date().timeIntervalSince(phase1StartTime)
+            let filesPerSec = phase1Duration > 0 ? Double(cloudCompleted) / phase1Duration : 0
             logService.log(.info, category: .backup,
-                           message: "[Phase1] Complete: \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
+                           message: "[Phase1] Complete: \(filesDownloaded) downloaded, \(filesOffloaded) offloaded in \(String(format: "%.1f", phase1Duration))s (\(String(format: "%.1f", filesPerSec)) files/s)")
         }
 
         // ============================================
