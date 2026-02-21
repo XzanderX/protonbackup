@@ -1059,7 +1059,7 @@ final class BackupEngine {
         // Uses cache when available to speed up subsequent backups
         // ============================================
         logService.log(.info, category: .backup,
-                       message: "Phase 0: Scanning directory structure...")
+                       message: "========== PHASE 0 START ==========")
 
         var localFilesToBackup: [(url: URL, relPath: String)] = []
         var cloudOnlyFilesToBackup: [(url: URL, relPath: String, cloudSize: Int64?)] = []
@@ -1292,7 +1292,7 @@ final class BackupEngine {
                             if currentSize == 0 {
                                 // File is now cloud-only - skip, will be handled in Phase 1
                                 logService.log(.debug, category: .backup,
-                                               message: "Skipping \(file.relPath) - became cloud-only since scan")
+                                               message: "[Phase0] Skipping \(file.relPath) - became cloud-only since scan")
                                 await copyQueue.incrementProcessed()
                                 continue
                             }
@@ -1304,9 +1304,10 @@ final class BackupEngine {
                                 try await copyFileWithRetry(from: file.sourceURL.path, to: file.destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                                 await tracker.recordFileUpdated()
                                 badgeService.markFileComplete(relativePath: file.relPath)
-                                // Phase 0: Local files stay local - no offloading
+                                logService.log(.debug, category: .backup,
+                                               message: "[Phase0] Copied local file: \(file.relPath)")
                             } catch {
-                                let desc = "Failed to backup \(file.relPath): \(error.localizedDescription)"
+                                let desc = "[Phase0] Failed to backup \(file.relPath): \(error.localizedDescription)"
                                 await tracker.recordError(desc)
                                 logService.log(.error, category: .backup, message: desc, filePath: file.relPath)
                                 badgeService.markFileError(relativePath: file.relPath)
@@ -1333,7 +1334,7 @@ final class BackupEngine {
                         let scanRate = elapsed > 0 ? Double(dirsScanned) / elapsed : 0
 
                         logService.log(.debug, category: .backup,
-                                       message: "Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
+                                       message: "[Phase0] Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
 
                         // Report the current file being copied (or scanning status if no file yet)
                         // Include skipped files (already up-to-date) in the completed count
@@ -1377,17 +1378,17 @@ final class BackupEngine {
             let dirsScanned = await collector.directoriesScanned
             let (_, copiedDuringScan, _) = await copyQueue.getStats()
             logService.log(.info, category: .backup,
-                           message: "Scan+Copy complete: \(dirsScanned) dirs, \(totalFilesFound) files, \(copiedDuringScan) copied during scan in \(String(format: "%.1f", scanDuration))s")
+                           message: "[Phase0] Scan+Copy complete: \(dirsScanned) dirs, \(totalFilesFound) files, \(copiedDuringScan) copied in \(String(format: "%.1f", scanDuration))s")
 
             // Save the structure cache for faster subsequent backups
             saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: cachedFileInfos, directories: cachedDirectories)
         }
 
         logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated) folders, \(filesUpdated) local files copied")
+                       message: "[Phase0] Complete: \(foldersCreated) folders, \(filesUpdated) local files copied")
 
         logService.log(.info, category: .backup,
-                       message: "Remaining: \(cloudOnlyFilesToBackup.count) cloud-only files to download")
+                       message: "[Phase0] Remaining for Phase1: \(cloudOnlyFilesToBackup.count) cloud-only files")
 
         // Calculate files to delete (use cached file info for source relative paths)
         var sourceRelative: Set<String>
@@ -1427,15 +1428,15 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "========== PHASE 1 START ==========")
         logService.log(.info, category: .backup,
-                       message: "Phase 1: \(cloudOnlyFilesToBackup.count) cloud-only files, offloadAfterBackup=\(offloadAfterBackup)")
+                       message: "[Phase1] \(cloudOnlyFilesToBackup.count) cloud-only files, offloadAfterBackup=\(offloadAfterBackup)")
 
         // Log first few files for debugging
         if !cloudOnlyFilesToBackup.isEmpty {
             let sampleFiles = cloudOnlyFilesToBackup.prefix(5).map { $0.relPath }
             logService.log(.info, category: .backup,
-                           message: "Phase 1 sample files: \(sampleFiles.joined(separator: ", "))")
+                           message: "[Phase1] Sample files: \(sampleFiles.joined(separator: ", "))")
             logService.log(.info, category: .backup,
-                           message: "Phase 1: Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
+                           message: "[Phase1] Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
 
             for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
                 // Check for pause
@@ -1465,31 +1466,31 @@ final class BackupEngine {
 
                     // DEBUG: Log the size check decision
                     logService.log(.info, category: .backup,
-                                   message: "Phase1 CHECK: \(relPath) stat_size=\(currentSize) needsDownload=\(needsDownload)")
+                                   message: "[Phase1] CHECK: \(relPath) stat_size=\(currentSize) needsDownload=\(needsDownload)")
 
                     // Track if WE downloaded this file (vs user/Proton Drive downloading it)
                     var weDownloadedIt = false
 
                     if needsDownload {
                         // File is still cloud-only - WE need to download it
-                        logService.log(.info, category: .backup, message: "Phase1 DOWNLOADING: \(relPath)")
+                        logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADING: \(relPath)")
                         let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
 
                         if !downloaded {
                             // Keep the placeholder, log warning
-                            errors.append("Download timeout: \(relPath) (placeholder kept)")
-                            logService.log(.warning, category: .backup, message: "Download timeout: \(relPath)")
+                            errors.append("[Phase1] Download timeout: \(relPath) (placeholder kept)")
+                            logService.log(.warning, category: .backup, message: "[Phase1] Download timeout: \(relPath)")
                             badgeService.markFileError(relativePath: relPath)
                             cloudCompleted += 1
                             continue
                         }
                         filesDownloaded += 1
                         weDownloadedIt = true
-                        logService.log(.info, category: .backup, message: "Phase1 DOWNLOADED: \(relPath) weDownloadedIt=TRUE")
+                        logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADED: \(relPath) weDownloadedIt=TRUE")
                     } else {
                         // File is now local (user or Proton Drive downloaded it since scan)
                         // Just copy it, but DON'T offload - respect user's choice to keep it local
-                        logService.log(.info, category: .backup, message: "Phase1 SKIP_DOWNLOAD: \(relPath) size=\(currentSize) weDownloadedIt=FALSE")
+                        logService.log(.info, category: .backup, message: "[Phase1] SKIP_DOWNLOAD: \(relPath) size=\(currentSize) weDownloadedIt=FALSE")
                     }
 
                     // Mark as syncing during copy
@@ -1503,7 +1504,7 @@ final class BackupEngine {
                     // Only offload if WE downloaded the file (restore to original cloud-only state)
                     // If user/Proton Drive downloaded it, respect their choice and keep it local
                     logService.log(.info, category: .backup,
-                                   message: "Phase1 OFFLOAD_CHECK: \(relPath) offloadAfterBackup=\(offloadAfterBackup) weDownloadedIt=\(weDownloadedIt)")
+                                   message: "[Phase1] OFFLOAD_CHECK: \(relPath) offloadAfterBackup=\(offloadAfterBackup) weDownloadedIt=\(weDownloadedIt)")
 
                     if offloadAfterBackup && weDownloadedIt {
                         // Update progress to show offloading status
@@ -1514,11 +1515,11 @@ final class BackupEngine {
                         )
                         progressHandler(offloadProgress)
 
-                        logService.log(.info, category: .backup, message: "Phase1 EVICTING: \(relPath)")
+                        logService.log(.info, category: .backup, message: "[Phase1] EVICTING: \(relPath)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: "Phase1 EVICTED_OK: \(relPath)")
+                            logService.log(.info, category: .backup, message: "[Phase1] EVICTED_OK: \(relPath)")
 
                             // Update progress to show offloaded status
                             let offloadedProgress = BackupProgress(
@@ -1528,17 +1529,17 @@ final class BackupEngine {
                             )
                             progressHandler(offloadedProgress)
                         } else {
-                            logService.log(.warning, category: .backup, message: "Phase1 EVICT_FAILED: \(relPath)")
+                            logService.log(.warning, category: .backup, message: "[Phase1] EVICT_FAILED: \(relPath)")
                             // File stays in shouldOffload list for retry on next backup
                         }
                     } else if !offloadAfterBackup {
-                        logService.log(.info, category: .backup, message: "Phase1 NO_OFFLOAD: \(relPath) (offloadAfterBackup is disabled)")
+                        logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (offloadAfterBackup is disabled)")
                     } else if !weDownloadedIt {
-                        logService.log(.info, category: .backup, message: "Phase1 NO_OFFLOAD: \(relPath) (we didn't download it)")
+                        logService.log(.info, category: .backup, message: "[Phase1] NO_OFFLOAD: \(relPath) (we didn't download it)")
                     }
 
                 } catch {
-                    let desc = "Failed to backup \(relPath): \(error.localizedDescription)"
+                    let desc = "[Phase1] Failed to backup \(relPath): \(error.localizedDescription)"
                     errors.append(desc)
                     logService.log(.error, category: .backup, message: desc, filePath: relPath)
                     badgeService.markFileError(relativePath: relPath)
@@ -1548,7 +1549,7 @@ final class BackupEngine {
             }
 
             logService.log(.info, category: .backup,
-                           message: "Phase 1 complete: \(filesDownloaded) cloud files downloaded")
+                           message: "[Phase1] Complete: \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
         }
 
         // ============================================
@@ -1566,7 +1567,7 @@ final class BackupEngine {
 
             if !filesToRetryEviction.isEmpty {
                 logService.log(.info, category: .backup,
-                               message: "Retrying eviction for \(filesToRetryEviction.count) files from previous backup...")
+                               message: "[Retry] Retrying eviction for \(filesToRetryEviction.count) files from previous backup...")
 
                 for fileInfo in filesToRetryEviction {
                     // Update progress to show offloading status
@@ -1582,7 +1583,7 @@ final class BackupEngine {
                         filesOffloaded += 1
                         evictedFiles.insert(fileInfo.relPath)
                         logService.log(.info, category: .backup,
-                                       message: "Status: offloaded (retry succeeded): \(fileInfo.relPath)")
+                                       message: "[Retry] EVICTED_OK: \(fileInfo.relPath)")
 
                         // Update progress to show offloaded status
                         let offloadedProgress = BackupProgress(
@@ -1596,7 +1597,7 @@ final class BackupEngine {
 
                 if !evictedFiles.isEmpty {
                     logService.log(.info, category: .backup,
-                                   message: "Eviction retry complete: \(evictedFiles.count) files offloaded")
+                                   message: "[Retry] Complete: \(evictedFiles.count) files offloaded")
                 }
             }
         }
@@ -1606,7 +1607,9 @@ final class BackupEngine {
         // ============================================
         if !filesToDelete.isEmpty {
             logService.log(.info, category: .backup,
-                           message: "Phase 2: Processing \(filesToDelete.count) deletions...")
+                           message: "========== PHASE 2 START ==========")
+            logService.log(.info, category: .backup,
+                           message: "[Phase2] Processing \(filesToDelete.count) deletions...")
 
             for relPath in filesToDelete {
                 while pauseChecker?() == true {
