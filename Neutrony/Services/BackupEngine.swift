@@ -1451,8 +1451,11 @@ final class BackupEngine {
                     let currentSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
                     let needsDownload = (currentSize == 0)
 
+                    // Track if WE downloaded this file (vs user/Proton Drive downloading it)
+                    var weDownloadedIt = false
+
                     if needsDownload {
-                        // File is still cloud-only - download it
+                        // File is still cloud-only - WE need to download it
                         logService.log(.debug, category: .backup, message: "Downloading: \(relPath)")
                         let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
 
@@ -1465,37 +1468,33 @@ final class BackupEngine {
                             continue
                         }
                         filesDownloaded += 1
+                        weDownloadedIt = true
                     } else {
-                        // File is now local (was downloaded since scan) - just copy it
-                        logService.log(.debug, category: .backup, message: "File already local (was cloud-only at scan): \(relPath)")
+                        // File is now local (user or Proton Drive downloaded it since scan)
+                        // Just copy it, but DON'T offload - respect user's choice to keep it local
+                        logService.log(.debug, category: .backup, message: "File already local (downloaded by user/system): \(relPath)")
                     }
 
                     // Mark as syncing during copy
                     badgeService.markFileSyncing(relativePath: relPath)
 
-                    // Copy the downloaded file (replaces placeholder)
+                    // Copy the file
                     try await copyFileWithRetry(from: fileURL.path, to: destPath, keepVersions: false, backupRoot: backupRoot)
                     filesUpdated += 1
                     badgeService.markFileComplete(relativePath: relPath)
 
-                    // Offload (evict) file back to cloud-only if requested
-                    // This restores the file to its original cloud-only state
-                    logService.log(.info, category: .backup, message: "File copied, offloadAfterBackup=\(offloadAfterBackup) for: \(relPath)")
-                    if offloadAfterBackup {
-                        logService.log(.info, category: .backup, message: ">>> STARTING OFFLOAD for: \(relPath)")
-                        logService.log(.info, category: .backup, message: ">>> Source path: \(fileURL.path)")
+                    // Only offload if WE downloaded the file (restore to original cloud-only state)
+                    // If user/Proton Drive downloaded it, respect their choice and keep it local
+                    if offloadAfterBackup && weDownloadedIt {
+                        logService.log(.info, category: .backup, message: "Offloading (we downloaded it): \(relPath)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: ">>> OFFLOAD SUCCESS: \(relPath)")
+                            logService.log(.info, category: .backup, message: "Offload success: \(relPath)")
                         } else {
-                            let warn = ">>> OFFLOAD FAILED: \(relPath) - file remains downloaded locally"
-                            errors.append(warn)
-                            logService.log(.warning, category: .backup, message: warn, filePath: relPath)
+                            logService.log(.warning, category: .backup, message: "Offload failed: \(relPath) - file remains local")
                             // File stays in shouldOffload list for retry on next backup
                         }
-                    } else {
-                        logService.log(.info, category: .backup, message: ">>> OFFLOAD DISABLED - skipping: \(relPath)")
                     }
 
                 } catch {
