@@ -1326,6 +1326,9 @@ final class BackupEngine {
 
                 // Progress update task
                 group.addTask { [self] in
+                    var lastDirs = 0
+                    var lastFound = 0
+                    var lastCopied = 0
                     while true {
                         let dirHasWork = await dirQueue.hasWork()
                         let copyHasWork = await copyQueue.hasWork()
@@ -1339,8 +1342,14 @@ final class BackupEngine {
                         let elapsed = Date().timeIntervalSince(scanStartTime)
                         let scanRate = elapsed > 0 ? Double(dirsScanned) / elapsed : 0
 
-                        logService.log(.debug, category: .backup,
-                                       message: "[Phase0] Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
+                        // Only log when values actually change
+                        if dirsScanned != lastDirs || filesFound != lastFound || copied != lastCopied {
+                            logService.log(.debug, category: .backup,
+                                           message: "[Phase0] Scan+Copy: \(dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(filesFound) found, \(copied)/\(queued) copied")
+                            lastDirs = dirsScanned
+                            lastFound = filesFound
+                            lastCopied = copied
+                        }
 
                         // Report the current file being copied (or scanning status if no file yet)
                         // Include skipped files (already up-to-date) in the completed count
