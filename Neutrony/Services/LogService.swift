@@ -91,13 +91,21 @@ final class LogService: ObservableObject {
 
     /// Schedule a batched flush of pending entries to the main thread
     private func scheduleFlush() {
-        // Cancel any pending flush
-        flushWorkItem?.cancel()
+        // Only schedule if there isn't already a pending flush
+        // This ensures flushes happen regularly even when logs arrive rapidly
+        pendingLock.lock()
+        let alreadyScheduled = flushWorkItem != nil
+        pendingLock.unlock()
+
+        guard !alreadyScheduled else { return }
 
         let workItem = DispatchWorkItem { [weak self] in
             self?.flushPendingEntries()
         }
+
+        pendingLock.lock()
         flushWorkItem = workItem
+        pendingLock.unlock()
 
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + flushInterval,
@@ -110,6 +118,7 @@ final class LogService: ObservableObject {
         pendingLock.lock()
         let entriesToAdd = pendingEntries
         pendingEntries.removeAll()
+        flushWorkItem = nil  // Clear so next log schedules a new flush
         pendingLock.unlock()
 
         guard !entriesToAdd.isEmpty else { return }
