@@ -131,6 +131,9 @@ final class DriveMonitor {
 
         guard !isInternal || isEjectable else { return }
 
+        // Skip volumes that aren't actually mounted (no path or not under /Volumes)
+        guard !mountPath.isEmpty, mountPath.hasPrefix("/Volumes/") else { return }
+
         logService.log(.info, category: .driveMonitor, message: "External volume appeared: \(volumeName) at \(mountPath)")
 
         let volumeURL = URL(fileURLWithPath: mountPath)
