@@ -41,10 +41,11 @@ struct FileStructureCache: Codable {
 
 /// Cache of destination file sizes to speed up reconnection
 struct DestinationCache: Codable {
-    var version: Int = 1
+    var version: Int = 2
     let destinationPath: String
     let scanDate: Date
     let fileSizes: [String: Int64]
+    let fileModTimes: [String: TimeInterval]?  // Optional for backward compat
 
     /// Cache is fresh if less than 4 hours old
     var isFresh: Bool {
@@ -138,8 +139,9 @@ actor ScanResultsCollector {
 
     /// Batch add multiple items from a directory scan
     func addBatchResults(
-        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)],
+        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)],
         destFileSizes: [String: Int64],
+        destModTimes: [String: TimeInterval],
         backupRoot: String
     ) {
         for item in items {
@@ -157,7 +159,7 @@ actor ScanResultsCollector {
                     isDirectory: false,
                     isCloudOnly: item.isCloudOnly,
                     size: item.localSize,
-                    modTime: nil,
+                    modTime: Date(timeIntervalSince1970: item.modTime),
                     shouldOffload: shouldOffload
                 ))
 
@@ -167,8 +169,12 @@ actor ScanResultsCollector {
                 if let existingSize = destFileSizes[item.relPath] {
                     if item.isCloudOnly {
                         needsBackup = existingSize == 0
+                    } else if item.localSize != existingSize {
+                        needsBackup = true
+                    } else if let destMtime = destModTimes[item.relPath], item.modTime > destMtime + 1.0 {
+                        needsBackup = true  // Same size but source is newer
                     } else {
-                        needsBackup = item.localSize != existingSize
+                        needsBackup = false
                     }
                 } else {
                     needsBackup = true
@@ -187,8 +193,9 @@ actor ScanResultsCollector {
 
     /// Batch add with immediate copy queue support - returns local files for immediate copying
     func addBatchResultsWithCopyQueue(
-        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)],
+        items: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)],
         destFileSizes: [String: Int64],
+        destModTimes: [String: TimeInterval],
         backupRoot: String
     ) -> [(sourceURL: URL, destPath: String, relPath: String)] {
         var localFilesForCopy: [(sourceURL: URL, destPath: String, relPath: String)] = []
@@ -209,18 +216,22 @@ actor ScanResultsCollector {
                     isDirectory: false,
                     isCloudOnly: item.isCloudOnly,
                     size: item.localSize,
-                    modTime: nil,
+                    modTime: Date(timeIntervalSince1970: item.modTime),
                     shouldOffload: shouldOffload
                 ))
 
-                // Determine if backup needed
+                // Determine if backup needed — compare size first, then modTime
                 let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
                 let needsBackup: Bool
                 if let existingSize = destFileSizes[item.relPath] {
                     if item.isCloudOnly {
                         needsBackup = existingSize == 0
+                    } else if item.localSize != existingSize {
+                        needsBackup = true
+                    } else if let destMtime = destModTimes[item.relPath], item.modTime > destMtime + 1.0 {
+                        needsBackup = true  // Same size but source is newer
                     } else {
-                        needsBackup = item.localSize != existingSize
+                        needsBackup = false
                     }
                 } else {
                     needsBackup = true
@@ -529,11 +540,12 @@ final class BackupEngine {
     }
 
     /// Save destination file sizes to cache
-    private func saveDestCache(backupRoot: String, fileSizes: [String: Int64]) {
+    private func saveDestCache(backupRoot: String, fileSizes: [String: Int64], modTimes: [String: TimeInterval] = [:]) {
         let cache = DestinationCache(
             destinationPath: backupRoot,
             scanDate: Date(),
-            fileSizes: fileSizes
+            fileSizes: fileSizes,
+            fileModTimes: modTimes.isEmpty ? nil : modTimes
         )
 
         let path = destCachePath(for: backupRoot)
@@ -555,13 +567,13 @@ final class BackupEngine {
     /// Scan destination directory using stat() for fast file size collection.
     /// Returns a dictionary of relative paths to file sizes.
     /// Uses parallel directory traversal for speed.
-    private func scanDestinationSizes(destURL: URL) -> [String: Int64] {
+    private func scanDestinationSizes(destURL: URL) -> (sizes: [String: Int64], modTimes: [String: TimeInterval]) {
         let fm = FileManager.default
         let basePath = destURL.path
         let basePathCount = basePath.count
 
         // Recursive scan using stat() - collects results into flat array (no merging)
-        func scanDir(_ dirPath: String, into results: inout [(String, Int64)]) {
+        func scanDir(_ dirPath: String, into results: inout [(String, Int64, TimeInterval)]) {
             guard let items = try? fm.contentsOfDirectory(atPath: dirPath) else { return }
 
             for itemName in items {
@@ -582,22 +594,23 @@ final class BackupEngine {
                     // Compute relative path and add to results
                     var relPath = String(itemPath.dropFirst(basePathCount))
                     if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
-                    results.append((relPath, Int64(statInfo.st_size)))
+                    let mtime = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                    results.append((relPath, Int64(statInfo.st_size), mtime))
                 }
             }
         }
 
         // Start scan - use DispatchQueue for parallelism on top-level dirs
-        guard let topItems = try? fm.contentsOfDirectory(atPath: basePath) else { return [:] }
+        guard let topItems = try? fm.contentsOfDirectory(atPath: basePath) else { return ([:], [:]) }
 
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "com.neutrony.destScan", attributes: .concurrent)
 
         // Collect worker results - each worker builds its own array, lock only at end
-        var allResults: [[(String, Int64)]] = []
+        var allResults: [[(String, Int64, TimeInterval)]] = []
         let resultsLock = NSLock()
 
-        var topLevelFiles: [(String, Int64)] = []
+        var topLevelFiles: [(String, Int64, TimeInterval)] = []
 
         for itemName in topItems {
             if itemName.hasPrefix(".") || itemName == "_versions" { continue }
@@ -610,7 +623,7 @@ final class BackupEngine {
             if isDirectory {
                 group.enter()
                 queue.async {
-                    var workerResults: [(String, Int64)] = []
+                    var workerResults: [(String, Int64, TimeInterval)] = []
                     scanDir(itemPath, into: &workerResults)
                     resultsLock.lock()
                     allResults.append(workerResults)
@@ -620,26 +633,32 @@ final class BackupEngine {
             } else {
                 var relPath = String(itemPath.dropFirst(basePathCount))
                 if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
-                topLevelFiles.append((relPath, Int64(statInfo.st_size)))
+                let mtime = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                topLevelFiles.append((relPath, Int64(statInfo.st_size), mtime))
             }
         }
 
         group.wait()
 
-        // Build dictionary from flat arrays - much faster than recursive merging
-        var finalResults: [String: Int64] = [:]
-        finalResults.reserveCapacity(topLevelFiles.count + allResults.reduce(0) { $0 + $1.count })
+        // Build dictionaries from flat arrays
+        let totalCount = topLevelFiles.count + allResults.reduce(0) { $0 + $1.count }
+        var finalSizes: [String: Int64] = [:]
+        var finalModTimes: [String: TimeInterval] = [:]
+        finalSizes.reserveCapacity(totalCount)
+        finalModTimes.reserveCapacity(totalCount)
 
-        for (path, size) in topLevelFiles {
-            finalResults[path] = size
+        for (path, size, mtime) in topLevelFiles {
+            finalSizes[path] = size
+            finalModTimes[path] = mtime
         }
         for workerResult in allResults {
-            for (path, size) in workerResult {
-                finalResults[path] = size
+            for (path, size, mtime) in workerResult {
+                finalSizes[path] = size
+                finalModTimes[path] = mtime
             }
         }
 
-        return finalResults
+        return (finalSizes, finalModTimes)
     }
 
     // MARK: - Public API
@@ -1063,13 +1082,17 @@ final class BackupEngine {
         // Try cached destination first for fast reconnection
         let destScanStart = Date()
         var destFileSizes: [String: Int64]
+        var destModTimes: [String: TimeInterval]
         if let destCache = loadDestCache(backupRoot: backupRoot) {
             destFileSizes = destCache.fileSizes
+            destModTimes = destCache.fileModTimes ?? [:]
             logService.log(.info, category: .backup,
                            message: "Using cached destination: \(destFileSizes.count) files (instant)")
         } else {
             logService.log(.info, category: .backup, message: "Scanning destination with stat()...")
-            destFileSizes = scanDestinationSizes(destURL: destURL)
+            let destScan = scanDestinationSizes(destURL: destURL)
+            destFileSizes = destScan.sizes
+            destModTimes = destScan.modTimes
             let scanTime = Date().timeIntervalSince(destScanStart)
             logService.log(.info, category: .backup,
                            message: "Destination scan complete: \(destFileSizes.count) files in \(String(format: "%.1f", scanTime))s")
@@ -1118,13 +1141,19 @@ final class BackupEngine {
                 let destFilePath = (backupRoot as NSString).appendingPathComponent(fileInfo.relPath)
                 let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
 
-                // Determine if backup needed
+                // Determine if backup needed — compare size first, then modTime
                 let needsBackup: Bool
                 if let existingSize = destFileSizes[fileInfo.relPath] {
                     if fileInfo.isCloudOnly {
                         needsBackup = existingSize == 0
+                    } else if fileInfo.size != existingSize {
+                        needsBackup = true
+                    } else if let cachedModTime = fileInfo.modTime,
+                              let destMtime = destModTimes[fileInfo.relPath],
+                              cachedModTime.timeIntervalSince1970 > destMtime + 1.0 {
+                        needsBackup = true  // Same size but source is newer
                     } else {
-                        needsBackup = fileInfo.size != existingSize
+                        needsBackup = false
                     }
                 } else {
                     needsBackup = true
@@ -1264,6 +1293,7 @@ final class BackupEngine {
                                 let localFilesForCopy = await collector.addBatchResultsWithCopyQueue(
                                     items: items,
                                     destFileSizes: destFileSizes,
+                                    destModTimes: destModTimes,
                                     backupRoot: backupRoot
                                 )
 
@@ -1705,12 +1735,17 @@ final class BackupEngine {
                        message: "On-demand backup complete: \(summary.displayText)")
 
         // Save updated destination cache for fast reconnection
-        // After backup, update dest sizes based on what we know changed
+        // After backup, update dest sizes and modTimes based on what we know changed
         var updatedDestSizes = destFileSizes
+        var updatedDestModTimes = destModTimes
         // Update local files that were copied during scan
         for fileInfo in cachedFileInfos where !fileInfo.isCloudOnly {
             if updatedDestSizes[fileInfo.relPath] != fileInfo.size {
                 updatedDestSizes[fileInfo.relPath] = fileInfo.size
+            }
+            // After copy, dest modTime matches source modTime (copyItem preserves it)
+            if let modTime = fileInfo.modTime {
+                updatedDestModTimes[fileInfo.relPath] = modTime.timeIntervalSince1970
             }
         }
         // Update cloud files that were downloaded
@@ -1719,13 +1754,15 @@ final class BackupEngine {
             var statInfo = stat()
             if stat(destPath, &statInfo) == 0 {
                 updatedDestSizes[relPath] = Int64(statInfo.st_size)
+                updatedDestModTimes[relPath] = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
             }
         }
         // Remove deleted files
         for relPath in filesToDelete {
             updatedDestSizes.removeValue(forKey: relPath)
+            updatedDestModTimes.removeValue(forKey: relPath)
         }
-        saveDestCache(backupRoot: backupRoot, fileSizes: updatedDestSizes)
+        saveDestCache(backupRoot: backupRoot, fileSizes: updatedDestSizes, modTimes: updatedDestModTimes)
 
         // Update structure cache with eviction status
         // Files that were successfully evicted no longer need shouldOffload
@@ -2070,7 +2107,7 @@ final class BackupEngine {
         directory: URL,
         sourceURL: URL,
         backupRoot: String
-    ) -> [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)]? {
+    ) -> [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)]? {
         let fm = FileManager.default
         let dirPath = directory.path
 
@@ -2079,7 +2116,7 @@ final class BackupEngine {
             return nil
         }
 
-        var results: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64)] = []
+        var results: [(item: URL, relPath: String, isDir: Bool, isCloudOnly: Bool, localSize: Int64, modTime: TimeInterval)] = []
         results.reserveCapacity(itemNames.count)
 
         let isInCloudStorage = dirPath.contains("/Library/CloudStorage/")
@@ -2115,8 +2152,10 @@ final class BackupEngine {
                 let isDirectory = (statInfo.st_mode & S_IFMT) == S_IFDIR
                 let fileSize = Int64(statInfo.st_size)
 
+                let mtime = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+
                 if isDirectory {
-                    results.append((itemURL, relPath, true, false, 0))
+                    results.append((itemURL, relPath, true, false, 0, mtime))
                 } else {
                     // File exists locally - check if it's a cloud-only placeholder
                     // Proton Drive's FileProvider reports the cloud file size via st_size
@@ -2124,7 +2163,7 @@ final class BackupEngine {
                     // to detect if the file content is really local.
                     // st_blocks == 0 means no disk blocks allocated = cloud-only placeholder
                     let isCloudOnly = isInCloudStorage && (fileSize == 0 || statInfo.st_blocks == 0)
-                    results.append((itemURL, relPath, false, isCloudOnly, fileSize))
+                    results.append((itemURL, relPath, false, isCloudOnly, fileSize, mtime))
                 }
             } else {
                 // Item listed but stat failed - likely cloud-only (not downloaded)
@@ -2133,9 +2172,9 @@ final class BackupEngine {
                 let isLikelyDirectory = pathExtension.isEmpty
 
                 if isLikelyDirectory {
-                    results.append((itemURL, relPath, true, true, 0))
+                    results.append((itemURL, relPath, true, true, 0, 0))
                 } else {
-                    results.append((itemURL, relPath, false, true, 0))
+                    results.append((itemURL, relPath, false, true, 0, 0))
                 }
             }
         }
