@@ -213,7 +213,9 @@ final class CloudSyncVerifier {
     }
 
     /// Wait for a file to be fully synced (with timeout).
-    /// Reports download progress via st_blocks when expectedSize and progressHandler are provided.
+    /// Reports download progress combining time-based estimation with st_blocks.
+    /// Proton Drive writes files atomically (st_blocks jumps from 0 to final), so
+    /// time-based estimation provides smooth intermediate progress for the UI.
     func waitForSync(at path: String, timeout: TimeInterval = 60, expectedSize: Int64 = 0, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
         let startTime = Date()
 
@@ -223,14 +225,25 @@ final class CloudSyncVerifier {
                 return true
             }
 
-            // Report intermediate download progress based on disk blocks allocated
-            if expectedSize > 0, let handler = progressHandler {
-                var currentStat = stat()
-                if stat(path, &currentStat) == 0 {
-                    let downloadedBytes = Int64(currentStat.st_blocks) * 512
-                    let fraction = min(Double(downloadedBytes) / Double(expectedSize), 0.99)
-                    handler(max(fraction, 0.0))
+            if let handler = progressHandler {
+                let elapsed = Date().timeIntervalSince(startTime)
+
+                // Time-based estimate: elapsed / (elapsed + 3.0) gives a smooth curve
+                // 1s→25%, 2s→40%, 3s→50%, 5s→63%, 10s→77% — always increasing, never reaching 1.0
+                let timeProgress = min(elapsed / (elapsed + 3.0), 0.95)
+
+                // st_blocks-based progress for large files where blocks increase gradually
+                var blockProgress: Double = 0
+                if expectedSize > 0 {
+                    var currentStat = stat()
+                    if stat(path, &currentStat) == 0 {
+                        let downloadedBytes = Int64(currentStat.st_blocks) * 512
+                        blockProgress = min(Double(downloadedBytes) / Double(expectedSize), 0.95)
+                    }
                 }
+
+                // Use whichever is higher — progress never goes backwards
+                handler(max(timeProgress, blockProgress))
             }
 
             // Wait a bit before checking again
