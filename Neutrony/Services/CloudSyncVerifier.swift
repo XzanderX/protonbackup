@@ -223,47 +223,47 @@ final class CloudSyncVerifier {
 
     /// Evict (offload) a file to free up local space.
     /// The file will become cloud-only and can be downloaded again later.
-    /// Works with any FileProvider extension including Proton Drive.
+    /// Uses fileproviderctl which works with third-party FileProviders like Proton Drive.
     func evictFile(at path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
         let fileName = (path as NSString).lastPathComponent
 
         // Log the full path and file state before eviction attempt
         let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
         logService.log(.info, category: .sync,
-                       message: "Eviction attempt: \(fileName) (size: \(fileSize) bytes, path: \(path))")
+                       message: "Eviction attempt: \(fileName) (size: \(fileSize) bytes)")
+
+        // Use fileproviderctl which works with third-party FileProviders like Proton Drive
+        // Reference: https://eclecticlight.co/2023/11/21/icloud-drive-in-sonoma-fileprovider-and-eviction/
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/fileproviderctl")
+        process.arguments = ["evict", path]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
 
         do {
-            // Try to evict using the FileManager API
-            // This works for any FileProvider extension, not just iCloud
-            try fileManager.evictUbiquitousItem(at: url)
+            try process.run()
+            process.waitUntilExit()
 
-            // Verify the eviction worked by checking file size after
-            let newSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
-            logService.log(.info, category: .sync,
-                           message: "Eviction API succeeded for \(fileName) - size after: \(newSize) bytes")
-            return true
-        } catch let error as NSError {
-            // Log the full error details
-            logService.log(.warning, category: .sync,
-                           message: "Eviction failed for \(fileName): domain=\(error.domain) code=\(error.code) - \(error.localizedDescription)")
+            let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: outputData, encoding: .utf8) ?? ""
 
-            // Check specific error codes
-            if error.domain == NSCocoaErrorDomain {
-                switch error.code {
-                case NSFeatureUnsupportedError:
-                    logService.log(.warning, category: .sync,
-                                   message: "Eviction not supported - Proton Drive may not support programmatic eviction")
-                case NSFileNoSuchFileError:
-                    logService.log(.warning, category: .sync,
-                                   message: "File not found at path: \(path)")
-                case NSFileWriteNoPermissionError:
-                    logService.log(.warning, category: .sync,
-                                   message: "No permission to evict file")
-                default:
-                    break
-                }
+            if process.terminationStatus == 0 {
+                // Verify the eviction worked by checking file size after
+                let newSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
+                let success = newSize == 0
+                logService.log(.info, category: .sync,
+                               message: "fileproviderctl evict for \(fileName): exit=0, size after: \(newSize) bytes, success=\(success)")
+                return success
+            } else {
+                logService.log(.warning, category: .sync,
+                               message: "fileproviderctl evict failed for \(fileName): exit=\(process.terminationStatus), output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+                return false
             }
+        } catch {
+            logService.log(.error, category: .sync,
+                           message: "fileproviderctl failed to run: \(error.localizedDescription)")
             return false
         }
     }
