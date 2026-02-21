@@ -698,6 +698,7 @@ final class BackupEngine {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
+                filesDownloaded: 0, filesOffloaded: 0,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
@@ -773,6 +774,8 @@ final class BackupEngine {
             filesUpdated: filesUpdated,
             filesDeleted: filesDeleted,
             filesSkipped: filesSkipped,
+            filesDownloaded: 0,
+            filesOffloaded: 0,
             errors: errors,
             startTime: startTime,
             endTime: Date()
@@ -894,6 +897,7 @@ final class BackupEngine {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
+                filesDownloaded: 0, filesOffloaded: 0,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
@@ -973,6 +977,8 @@ final class BackupEngine {
             filesUpdated: filesUpdated,
             filesDeleted: filesDeleted,
             filesSkipped: filesSkipped,
+            filesDownloaded: 0,
+            filesOffloaded: 0,
             errors: errors,
             startTime: startTime,
             endTime: Date()
@@ -1406,6 +1412,7 @@ final class BackupEngine {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
+                filesDownloaded: 0, filesOffloaded: 0,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
@@ -1452,7 +1459,7 @@ final class BackupEngine {
 
                     if needsDownload {
                         // File is still cloud-only - WE need to download it
-                        logService.log(.debug, category: .backup, message: "Downloading: \(relPath)")
+                        logService.log(.info, category: .backup, message: "Status: cloud-only → downloading: \(relPath)")
                         let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
 
                         if !downloaded {
@@ -1465,10 +1472,11 @@ final class BackupEngine {
                         }
                         filesDownloaded += 1
                         weDownloadedIt = true
+                        logService.log(.info, category: .backup, message: "Status: downloaded (by us): \(relPath)")
                     } else {
                         // File is now local (user or Proton Drive downloaded it since scan)
                         // Just copy it, but DON'T offload - respect user's choice to keep it local
-                        logService.log(.debug, category: .backup, message: "File already local (downloaded by user/system): \(relPath)")
+                        logService.log(.info, category: .backup, message: "Status: already local (user/system downloaded, will NOT offload): \(relPath)")
                     }
 
                     // Mark as syncing during copy
@@ -1482,13 +1490,29 @@ final class BackupEngine {
                     // Only offload if WE downloaded the file (restore to original cloud-only state)
                     // If user/Proton Drive downloaded it, respect their choice and keep it local
                     if offloadAfterBackup && weDownloadedIt {
-                        logService.log(.info, category: .backup, message: "Offloading (we downloaded it): \(relPath)")
+                        // Update progress to show offloading status
+                        let offloadProgress = BackupProgress(
+                            totalFiles: totalAllFiles,
+                            completedFiles: baseCompleted + cloudCompleted,
+                            currentFileName: "⬆ \(relPath)"
+                        )
+                        progressHandler(offloadProgress)
+
+                        logService.log(.info, category: .backup, message: "Status: local → offloading: \(relPath)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: "Offload success: \(relPath)")
+                            logService.log(.info, category: .backup, message: "Status: offloaded (cloud-only): \(relPath)")
+
+                            // Update progress to show offloaded status
+                            let offloadedProgress = BackupProgress(
+                                totalFiles: totalAllFiles,
+                                completedFiles: baseCompleted + cloudCompleted,
+                                currentFileName: "☁ \(relPath)"
+                            )
+                            progressHandler(offloadedProgress)
                         } else {
-                            logService.log(.warning, category: .backup, message: "Offload failed: \(relPath) - file remains local")
+                            logService.log(.warning, category: .backup, message: "Status: offload FAILED (remains local, will retry): \(relPath)")
                             // File stays in shouldOffload list for retry on next backup
                         }
                     }
@@ -1525,12 +1549,28 @@ final class BackupEngine {
                                message: "Retrying eviction for \(filesToRetryEviction.count) files from previous backup...")
 
                 for fileInfo in filesToRetryEviction {
+                    // Update progress to show offloading status
+                    let offloadProgress = BackupProgress(
+                        totalFiles: totalAllFiles,
+                        completedFiles: baseCompleted + cloudCompleted,
+                        currentFileName: "⬆ \(fileInfo.relPath)"
+                    )
+                    progressHandler(offloadProgress)
+
                     let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
                     if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                         filesOffloaded += 1
                         evictedFiles.insert(fileInfo.relPath)
-                        logService.log(.debug, category: .backup,
-                                       message: "Retry eviction succeeded: \(fileInfo.relPath)")
+                        logService.log(.info, category: .backup,
+                                       message: "Status: offloaded (retry succeeded): \(fileInfo.relPath)")
+
+                        // Update progress to show offloaded status
+                        let offloadedProgress = BackupProgress(
+                            totalFiles: totalAllFiles,
+                            completedFiles: baseCompleted + cloudCompleted,
+                            currentFileName: "☁ \(fileInfo.relPath)"
+                        )
+                        progressHandler(offloadedProgress)
                     }
                 }
 
@@ -1586,6 +1626,8 @@ final class BackupEngine {
             filesUpdated: filesUpdated,
             filesDeleted: filesDeleted,
             filesSkipped: filesSkipped,
+            filesDownloaded: filesDownloaded,
+            filesOffloaded: filesOffloaded,
             errors: errors,
             startTime: startTime,
             endTime: Date()
@@ -1593,8 +1635,6 @@ final class BackupEngine {
 
         logService.log(.info, category: .backup,
                        message: "On-demand backup complete: \(summary.displayText)")
-        logService.log(.info, category: .backup,
-                       message: "Stats: \(placeholdersCreated) placeholders, \(filesDownloaded) downloaded, \(filesOffloaded) offloaded")
 
         // Save updated destination cache for fast reconnection
         // After backup, update dest sizes based on what we know changed
@@ -1800,6 +1840,7 @@ final class BackupEngine {
             logService.log(.info, category: .backup, message: "Backup is up to date, no changes needed")
             return BackupSummary(
                 filesUpdated: 0, filesDeleted: 0, filesSkipped: filesSkipped,
+                filesDownloaded: 0, filesOffloaded: 0,
                 errors: [], startTime: startTime, endTime: Date()
             )
         }
@@ -1900,13 +1941,15 @@ final class BackupEngine {
             filesUpdated: filesUpdated,
             filesDeleted: filesDeleted,
             filesSkipped: filesSkipped,
+            filesDownloaded: filesDownloaded,
+            filesOffloaded: 0,
             errors: errors,
             startTime: startTime,
             endTime: Date()
         )
 
         logService.log(.info, category: .backup,
-                       message: "Hybrid backup complete: \(summary.displayText) (\(filesDownloaded) downloaded from cloud)")
+                       message: "Hybrid backup complete: \(summary.displayText)")
         return summary
     }
 

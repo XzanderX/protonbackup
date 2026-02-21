@@ -148,6 +148,8 @@ enum FileActivityStatus: Equatable {
     case downloading(progress: Double)  // 0.0 to 1.0
     case copying(progress: Double?)     // nil = indeterminate, 0.0-1.0 = percentage
     case copied
+    case offloading                     // Evicting file back to cloud
+    case offloaded                      // Successfully evicted to cloud-only
     case skipped
     case error(String)
 
@@ -166,6 +168,10 @@ enum FileActivityStatus: Equatable {
             return "Copying"
         case .copied:
             return "Copied"
+        case .offloading:
+            return "Offloading"
+        case .offloaded:
+            return "Offloaded"
         case .skipped:
             return "Skipped"
         case .error(let msg):
@@ -180,6 +186,8 @@ enum FileActivityStatus: Equatable {
         case .downloading: return "arrow.down.circle"
         case .copying: return "arrow.right.circle"
         case .copied: return "checkmark.circle.fill"
+        case .offloading: return "arrow.up.circle"
+        case .offloaded: return "cloud.fill"
         case .skipped: return "arrow.uturn.right.circle"
         case .error: return "exclamationmark.circle.fill"
         }
@@ -188,7 +196,7 @@ enum FileActivityStatus: Equatable {
     /// Whether this status indicates an active operation
     var isActive: Bool {
         switch self {
-        case .indexing, .waitingToDownload, .downloading, .copying:
+        case .indexing, .waitingToDownload, .downloading, .copying, .offloading:
             return true
         default:
             return false
@@ -201,6 +209,8 @@ struct BackupSummary: Equatable {
     var filesUpdated: Int
     var filesDeleted: Int
     var filesSkipped: Int
+    var filesDownloaded: Int
+    var filesOffloaded: Int
     var errors: [String]
     var startTime: Date
     var endTime: Date
@@ -223,6 +233,8 @@ struct BackupSummary: Equatable {
     var displayText: String {
         var parts: [String] = []
         if filesUpdated > 0 { parts.append("\(filesUpdated) updated") }
+        if filesDownloaded > 0 { parts.append("\(filesDownloaded) downloaded") }
+        if filesOffloaded > 0 { parts.append("\(filesOffloaded) offloaded") }
         if filesDeleted > 0 { parts.append("\(filesDeleted) deleted") }
         if filesSkipped > 0 { parts.append("\(filesSkipped) skipped") }
         if !errors.isEmpty { parts.append("\(errors.count) errors") }

@@ -852,6 +852,16 @@ final class AppState: ObservableObject {
             return .downloading(progress: downloadProgress)
         }
 
+        // BackupEngine prefixes with ⬆ for offloading (evicting to cloud)
+        if fileName.hasPrefix("⬆") {
+            return .offloading
+        }
+
+        // BackupEngine prefixes with ☁ for offloaded (evicted to cloud)
+        if fileName.hasPrefix("☁") {
+            return .offloaded
+        }
+
         // Check if we're still in scanning phase
         if fileName.lowercased().contains("scanning") || fileName.lowercased().contains("indexing") {
             return .indexing
@@ -874,6 +884,18 @@ final class AppState: ObservableObject {
         if clean.hasPrefix("⬇ ") {
             clean = String(clean.dropFirst(2))
         } else if clean.hasPrefix("⬇") {
+            clean = String(clean.dropFirst(1))
+        }
+        // Remove offloading prefix
+        if clean.hasPrefix("⬆ ") {
+            clean = String(clean.dropFirst(2))
+        } else if clean.hasPrefix("⬆") {
+            clean = String(clean.dropFirst(1))
+        }
+        // Remove offloaded prefix
+        if clean.hasPrefix("☁ ") {
+            clean = String(clean.dropFirst(2))
+        } else if clean.hasPrefix("☁") {
             clean = String(clean.dropFirst(1))
         }
         return clean
