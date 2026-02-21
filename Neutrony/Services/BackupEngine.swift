@@ -370,24 +370,13 @@ final class BackupEngine {
     /// Concurrency limit for parallel directory scanning
     private let maxConcurrentScans = 16
 
-    /// Files/patterns to skip during backup (temp files, system files, partial downloads)
-    private let skipPatterns: [String] = [
-        ".DS_Store",
-        ".localized",
-        ".tmp",
-        ".partial",
-        ".download",
-        ".crdownload",
-        "~$",           // Office temp files
-        ".~lock.",      // LibreOffice locks
-        ".swp",         // Vim swap
-        ".swo",
-        "Thumbs.db",
-        "desktop.ini",
-        ".Spotlight-V100",
-        ".Trashes",
-        ".fseventsd"
+    /// Files to skip during backup - organized for O(1) lookups where possible
+    private let skipExactNames: Set<String> = [
+        ".DS_Store", "Thumbs.db", "desktop.ini", ".localized",
+        ".Spotlight-V100", ".Trashes", ".fseventsd"
     ]
+    private let skipSuffixes: [String] = [".tmp", ".partial", ".download", ".crdownload", ".swp", ".swo"]
+    private let skipPrefixes: [String] = ["~$", ".~lock."]
 
     init(logService: LogService, versionManager: VersionManager) {
         self.logService = logService
@@ -2202,10 +2191,15 @@ final class BackupEngine {
     private func shouldSkipFile(_ path: String, skipZeroByteFiles: Bool = true) -> Bool {
         let fileName = (path as NSString).lastPathComponent
 
-        for pattern in skipPatterns {
-            if fileName.hasPrefix(pattern) || fileName.hasSuffix(pattern) || fileName.contains(pattern) {
-                return true
-            }
+        // O(1) exact name check
+        if skipExactNames.contains(fileName) { return true }
+
+        // Check prefixes and suffixes (small arrays, fast iteration)
+        for prefix in skipPrefixes {
+            if fileName.hasPrefix(prefix) { return true }
+        }
+        for suffix in skipSuffixes {
+            if fileName.hasSuffix(suffix) { return true }
         }
 
         // Skip zero-byte files (likely incomplete downloads) - but not for on-demand backup

@@ -73,11 +73,11 @@ final class CloudSyncVerifier {
         // Check for special extended attributes that indicate placeholder
         let url = URL(fileURLWithPath: path)
 
-        // Check if file has the "offline" extended attribute
-        if let extAttrs = try? url.resourceValues(forKeys: [.isUbiquitousItemKey]) {
-            if extAttrs.isUbiquitousItem == true {
+        // Fetch both attributes in a single call for efficiency
+        if let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]) {
+            if values.isUbiquitousItem == true {
                 // It's a cloud-managed file, check if downloaded
-                if let downloadStatus = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus {
+                if let downloadStatus = values.ubiquitousItemDownloadingStatus {
                     return downloadStatus == .notDownloaded
                 }
             }
