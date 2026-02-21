@@ -89,7 +89,7 @@ struct FileActivityRow: View {
                 // Status - Folder link
                 HStack(spacing: 4) {
                     Text(activity.status.displayText)
-                        .font(.system(size: 11))
+                        .font(.system(size: 11).monospacedDigit())
                         .foregroundColor(.secondary)
 
                     Text("-")

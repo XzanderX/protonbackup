@@ -51,7 +51,7 @@ struct HeaderView: View {
 
                 if appState.isDestinationConnected {
                     Text(statusText)
-                        .font(.system(size: 12))
+                        .font(.system(size: 12).monospacedDigit())
                         .foregroundColor(.secondary)
                 } else {
                     Text("Drive not connected")
@@ -158,7 +158,7 @@ struct StatusBarView: View {
                 .foregroundColor(statusColor)
 
             Text(statusText)
-                .font(.system(size: 12))
+                .font(.system(size: 12).monospacedDigit())
                 .foregroundColor(.primary)
 
             Spacer()
