@@ -228,35 +228,41 @@ final class CloudSyncVerifier {
         let url = URL(fileURLWithPath: path)
         let fileName = (path as NSString).lastPathComponent
 
+        // Log the full path and file state before eviction attempt
+        let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
+        logService.log(.info, category: .sync,
+                       message: "Eviction attempt: \(fileName) (size: \(fileSize) bytes, path: \(path))")
+
         do {
             // Try to evict using the FileManager API
             // This works for any FileProvider extension, not just iCloud
             try fileManager.evictUbiquitousItem(at: url)
-            logService.log(.debug, category: .sync, message: "Evicted file: \(fileName)")
+
+            // Verify the eviction worked by checking file size after
+            let newSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
+            logService.log(.info, category: .sync,
+                           message: "Eviction API succeeded for \(fileName) - size after: \(newSize) bytes")
             return true
         } catch let error as NSError {
+            // Log the full error details
+            logService.log(.warning, category: .sync,
+                           message: "Eviction failed for \(fileName): domain=\(error.domain) code=\(error.code) - \(error.localizedDescription)")
+
             // Check specific error codes
             if error.domain == NSCocoaErrorDomain {
                 switch error.code {
                 case NSFeatureUnsupportedError:
-                    // File is not managed by a FileProvider that supports eviction
-                    logService.log(.debug, category: .sync,
-                                   message: "Cannot evict \(fileName): not a cloud-managed file")
+                    logService.log(.warning, category: .sync,
+                                   message: "Eviction not supported - Proton Drive may not support programmatic eviction")
                 case NSFileNoSuchFileError:
-                    // File doesn't exist
-                    logService.log(.debug, category: .sync,
-                                   message: "Cannot evict \(fileName): file not found")
+                    logService.log(.warning, category: .sync,
+                                   message: "File not found at path: \(path)")
                 case NSFileWriteNoPermissionError:
-                    // No permission to modify
-                    logService.log(.debug, category: .sync,
-                                   message: "Cannot evict \(fileName): no permission")
+                    logService.log(.warning, category: .sync,
+                                   message: "No permission to evict file")
                 default:
-                    logService.log(.debug, category: .sync,
-                                   message: "Could not evict \(fileName): \(error.localizedDescription) (code: \(error.code))")
+                    break
                 }
-            } else {
-                logService.log(.debug, category: .sync,
-                               message: "Could not evict \(fileName): \(error.localizedDescription)")
             }
             return false
         }
@@ -266,25 +272,25 @@ final class CloudSyncVerifier {
     /// The FileProvider may need time after a download/copy before accepting eviction.
     func evictFileWithRetry(at path: String, maxAttempts: Int = 5, delaySeconds: Double = 2.0) async -> Bool {
         let fileName = (path as NSString).lastPathComponent
+        logService.log(.info, category: .sync,
+                       message: "Starting eviction with \(maxAttempts) attempts for: \(fileName)")
 
         for attempt in 1...maxAttempts {
             if evictFile(at: path) {
-                if attempt > 1 {
-                    logService.log(.debug, category: .sync,
-                                   message: "Eviction succeeded on attempt \(attempt) for \(fileName)")
-                }
+                logService.log(.info, category: .sync,
+                               message: "Eviction completed on attempt \(attempt) for \(fileName)")
                 return true
             }
 
             if attempt < maxAttempts {
-                logService.log(.debug, category: .sync,
-                               message: "Eviction attempt \(attempt)/\(maxAttempts) failed for \(fileName), waiting \(delaySeconds)s...")
+                logService.log(.info, category: .sync,
+                               message: "Retry \(attempt)/\(maxAttempts) for \(fileName), waiting \(delaySeconds)s...")
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
         }
 
-        logService.log(.warning, category: .sync,
-                       message: "Failed to evict \(fileName) after \(maxAttempts) attempts - file remains downloaded")
+        logService.log(.error, category: .sync,
+                       message: "FAILED to evict \(fileName) after \(maxAttempts) attempts - file remains downloaded locally")
         return false
     }
 
