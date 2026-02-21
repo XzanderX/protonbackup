@@ -227,10 +227,17 @@ final class CloudSyncVerifier {
     func evictFile(at path: String) -> Bool {
         let fileName = (path as NSString).lastPathComponent
 
-        // Log the full path and file state before eviction attempt
-        let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
+        // Log the full path and file state before eviction attempt using stat() for consistency
+        var statInfo = stat()
+        let statResult = stat(path, &statInfo)
+        let fileSize: Int64 = (statResult == 0) ? Int64(statInfo.st_size) : -1
+
         logService.log(.info, category: .sync,
-                       message: "Eviction attempt: \(fileName) (size: \(fileSize) bytes)")
+                       message: "EVICT START: \(fileName)")
+        logService.log(.info, category: .sync,
+                       message: "  path: \(path)")
+        logService.log(.info, category: .sync,
+                       message: "  stat_size: \(fileSize) bytes")
 
         // Use fileproviderctl which works with third-party FileProviders like Proton Drive
         // Reference: https://eclecticlight.co/2023/11/21/icloud-drive-in-sonoma-fileprovider-and-eviction/
@@ -250,15 +257,24 @@ final class CloudSyncVerifier {
             let output = String(data: outputData, encoding: .utf8) ?? ""
 
             if process.terminationStatus == 0 {
-                // Verify the eviction worked by checking file size after
-                let newSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? -1
+                // Verify the eviction worked by checking file size after using stat()
+                var newStatInfo = stat()
+                let newStatResult = stat(path, &newStatInfo)
+                let newSize: Int64 = (newStatResult == 0) ? Int64(newStatInfo.st_size) : -1
                 let success = newSize == 0
                 logService.log(.info, category: .sync,
-                               message: "fileproviderctl evict for \(fileName): exit=0, size after: \(newSize) bytes, success=\(success)")
+                               message: "EVICT RESULT: \(fileName) exit=0 new_stat_size=\(newSize) success=\(success)")
+                if !success {
+                    logService.log(.warning, category: .sync,
+                                   message: "  NOTE: fileproviderctl returned success but file size is still \(newSize)")
+                }
                 return success
             } else {
+                let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 logService.log(.warning, category: .sync,
-                               message: "fileproviderctl evict failed for \(fileName): exit=\(process.terminationStatus), output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+                               message: "EVICT FAILED: \(fileName) exit=\(process.terminationStatus)")
+                logService.log(.warning, category: .sync,
+                               message: "  output: \(trimmedOutput)")
                 return false
             }
         } catch {
@@ -273,7 +289,11 @@ final class CloudSyncVerifier {
     func evictFileWithRetry(at path: String, maxAttempts: Int = 5, delaySeconds: Double = 2.0) async -> Bool {
         let fileName = (path as NSString).lastPathComponent
         logService.log(.info, category: .sync,
-                       message: "Starting eviction with \(maxAttempts) attempts for: \(fileName)")
+                       message: "========== EVICT_WITH_RETRY ==========")
+        logService.log(.info, category: .sync,
+                       message: "File: \(fileName)")
+        logService.log(.info, category: .sync,
+                       message: "Max attempts: \(maxAttempts), delay: \(delaySeconds)s")
 
         for attempt in 1...maxAttempts {
             if evictFile(at: path) {

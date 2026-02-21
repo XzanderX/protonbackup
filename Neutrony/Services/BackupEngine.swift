@@ -1425,9 +1425,15 @@ final class BackupEngine {
         var evictedFiles = Set<String>()
 
         logService.log(.info, category: .backup,
-                       message: "Phase 1 starting: \(cloudOnlyFilesToBackup.count) cloud files, offloadAfterBackup=\(offloadAfterBackup)")
+                       message: "========== PHASE 1 START ==========")
+        logService.log(.info, category: .backup,
+                       message: "Phase 1: \(cloudOnlyFilesToBackup.count) cloud-only files, offloadAfterBackup=\(offloadAfterBackup)")
 
+        // Log first few files for debugging
         if !cloudOnlyFilesToBackup.isEmpty {
+            let sampleFiles = cloudOnlyFilesToBackup.prefix(5).map { $0.relPath }
+            logService.log(.info, category: .backup,
+                           message: "Phase 1 sample files: \(sampleFiles.joined(separator: ", "))")
             logService.log(.info, category: .backup,
                            message: "Phase 1: Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
 
@@ -1451,15 +1457,22 @@ final class BackupEngine {
                     let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
 
                     // Re-check file status before downloading (status may have changed since scan)
-                    let currentSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+                    // Use stat() for consistency with scan - FileManager might return cloud size
+                    var statInfo = stat()
+                    let statResult = stat(fileURL.path, &statInfo)
+                    let currentSize: Int64 = (statResult == 0) ? Int64(statInfo.st_size) : 0
                     let needsDownload = (currentSize == 0)
+
+                    // DEBUG: Log the size check decision
+                    logService.log(.info, category: .backup,
+                                   message: "Phase1 CHECK: \(relPath) stat_size=\(currentSize) needsDownload=\(needsDownload)")
 
                     // Track if WE downloaded this file (vs user/Proton Drive downloading it)
                     var weDownloadedIt = false
 
                     if needsDownload {
                         // File is still cloud-only - WE need to download it
-                        logService.log(.info, category: .backup, message: "Status: cloud-only → downloading: \(relPath)")
+                        logService.log(.info, category: .backup, message: "Phase1 DOWNLOADING: \(relPath)")
                         let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
 
                         if !downloaded {
@@ -1472,11 +1485,11 @@ final class BackupEngine {
                         }
                         filesDownloaded += 1
                         weDownloadedIt = true
-                        logService.log(.info, category: .backup, message: "Status: downloaded (by us): \(relPath)")
+                        logService.log(.info, category: .backup, message: "Phase1 DOWNLOADED: \(relPath) weDownloadedIt=TRUE")
                     } else {
                         // File is now local (user or Proton Drive downloaded it since scan)
                         // Just copy it, but DON'T offload - respect user's choice to keep it local
-                        logService.log(.info, category: .backup, message: "Status: already local (user/system downloaded, will NOT offload): \(relPath)")
+                        logService.log(.info, category: .backup, message: "Phase1 SKIP_DOWNLOAD: \(relPath) size=\(currentSize) weDownloadedIt=FALSE")
                     }
 
                     // Mark as syncing during copy
@@ -1489,6 +1502,9 @@ final class BackupEngine {
 
                     // Only offload if WE downloaded the file (restore to original cloud-only state)
                     // If user/Proton Drive downloaded it, respect their choice and keep it local
+                    logService.log(.info, category: .backup,
+                                   message: "Phase1 OFFLOAD_CHECK: \(relPath) offloadAfterBackup=\(offloadAfterBackup) weDownloadedIt=\(weDownloadedIt)")
+
                     if offloadAfterBackup && weDownloadedIt {
                         // Update progress to show offloading status
                         let offloadProgress = BackupProgress(
@@ -1498,11 +1514,11 @@ final class BackupEngine {
                         )
                         progressHandler(offloadProgress)
 
-                        logService.log(.info, category: .backup, message: "Status: local → offloading: \(relPath)")
+                        logService.log(.info, category: .backup, message: "Phase1 EVICTING: \(relPath)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: "Status: offloaded (cloud-only): \(relPath)")
+                            logService.log(.info, category: .backup, message: "Phase1 EVICTED_OK: \(relPath)")
 
                             // Update progress to show offloaded status
                             let offloadedProgress = BackupProgress(
@@ -1512,9 +1528,13 @@ final class BackupEngine {
                             )
                             progressHandler(offloadedProgress)
                         } else {
-                            logService.log(.warning, category: .backup, message: "Status: offload FAILED (remains local, will retry): \(relPath)")
+                            logService.log(.warning, category: .backup, message: "Phase1 EVICT_FAILED: \(relPath)")
                             // File stays in shouldOffload list for retry on next backup
                         }
+                    } else if !offloadAfterBackup {
+                        logService.log(.info, category: .backup, message: "Phase1 NO_OFFLOAD: \(relPath) (offloadAfterBackup is disabled)")
+                    } else if !weDownloadedIt {
+                        logService.log(.info, category: .backup, message: "Phase1 NO_OFFLOAD: \(relPath) (we didn't download it)")
                     }
 
                 } catch {
