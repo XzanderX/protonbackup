@@ -130,9 +130,15 @@ struct HeaderView: View {
 
     private var statusText: String {
         if case .backing(let progress) = appState.backupState {
-            return "Backing up \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
+            if progress.totalFiles > 0 {
+                return "Backing up \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
+            }
+            return "Scanning files…"
         } else if case .syncing(let progress) = appState.backupState {
-            return "Syncing \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
+            if progress.totalFiles > 0 {
+                return "Downloading \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
+            }
+            return "Scanning Proton Drive…"
         } else if let lastBackup = appState.config.lastSuccessfulBackup {
             return "Last backup \(lastBackup.relativeString)"
         }
@@ -210,17 +216,23 @@ struct StatusBarView: View {
             }
             return "Up to date"
         case .backing(let progress):
-            return "Backing up… \(progress.summary) (\(progress.percentage)%)"
+            if progress.totalFiles > 0 {
+                return "Backing up… \(progress.summary) (\(progress.percentage)%)"
+            }
+            return "Scanning files…"
         case .syncing(let progress):
-            return "Syncing… \(progress.summary) (\(progress.percentage)%)"
+            if progress.totalFiles > 0 {
+                return "Downloading from Proton Drive… \(progress.summary) (\(progress.percentage)%)"
+            }
+            return "Scanning Proton Drive…"
         case .paused(let progress):
-            return "Paused - \(progress.summary) (\(progress.percentage)%)"
+            return "Paused — \(progress.summary) (\(progress.percentage)%)"
         case .error(let message):
             return "Error: \(message)"
         case .destinationDisconnected:
             return "Connect drive to back up"
         case .idle:
-            return "Ready"
+            return "Waiting for next backup"
         case .notConfigured:
             return "Setup required"
         }

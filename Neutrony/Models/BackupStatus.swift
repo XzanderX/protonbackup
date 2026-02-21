@@ -62,13 +62,19 @@ enum BackupState: Equatable {
     var statusText: String {
         switch self {
         case .idle:
-            return "Idle"
+            return "Ready"
         case .syncing(let progress):
-            return "Syncing from Proton Drive… \(progress.summary)"
+            if progress.totalFiles > 0 {
+                return "Downloading from Proton Drive… \(progress.summary)"
+            }
+            return "Scanning Proton Drive…"
         case .backing(let progress):
-            return "Backing up… \(progress.summary)"
+            if progress.totalFiles > 0 {
+                return "Backing up… \(progress.summary)"
+            }
+            return "Scanning files…"
         case .paused(let progress):
-            return "Paused at \(progress.summary)"
+            return "Paused — \(progress.summary)"
         case .upToDate:
             return "Up to date"
         case .destinationDisconnected:
@@ -153,6 +159,7 @@ enum FileActivityStatus: Equatable {
     case downloading(progress: Double)  // 0.0 to 1.0
     case copying(progress: Double?)     // nil = indeterminate, 0.0-1.0 = percentage
     case copied
+    case deleted                        // File removed from backup destination
     case offloading                     // Evicting file back to cloud
     case offloaded                      // Successfully evicted to cloud-only
     case skipped
@@ -173,12 +180,14 @@ enum FileActivityStatus: Equatable {
             return "Copying"
         case .copied:
             return "Copied"
+        case .deleted:
+            return "Deleted"
         case .offloading:
-            return "Offloading"
+            return "Freeing up space"
         case .offloaded:
-            return "Offloaded"
+            return "Cloud only"
         case .skipped:
-            return "Skipped"
+            return "Up to date"
         case .error(let msg):
             return "Error: \(msg)"
         }
@@ -191,9 +200,10 @@ enum FileActivityStatus: Equatable {
         case .downloading: return "arrow.down.circle"
         case .copying: return "arrow.right.circle"
         case .copied: return "checkmark.circle.fill"
+        case .deleted: return "trash"
         case .offloading: return "arrow.up.circle"
         case .offloaded: return "cloud.fill"
-        case .skipped: return "arrow.uturn.right.circle"
+        case .skipped: return "checkmark.circle"
         case .error: return "exclamationmark.circle.fill"
         }
     }
@@ -239,9 +249,9 @@ struct BackupSummary: Equatable {
         var parts: [String] = []
         if filesUpdated > 0 { parts.append("\(filesUpdated) updated") }
         if filesDownloaded > 0 { parts.append("\(filesDownloaded) downloaded") }
-        if filesOffloaded > 0 { parts.append("\(filesOffloaded) offloaded") }
+        if filesOffloaded > 0 { parts.append("\(filesOffloaded) freed up") }
         if filesDeleted > 0 { parts.append("\(filesDeleted) deleted") }
-        if filesSkipped > 0 { parts.append("\(filesSkipped) skipped") }
+        if filesSkipped > 0 { parts.append("\(filesSkipped) unchanged") }
         if !errors.isEmpty { parts.append("\(errors.count) errors") }
         let summary = parts.isEmpty ? "No changes" : parts.joined(separator: ", ")
         return "\(summary) in \(formattedDuration)"

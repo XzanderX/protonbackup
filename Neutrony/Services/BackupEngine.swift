@@ -800,7 +800,7 @@ final class BackupEngine {
             let currentProgress = BackupProgress(
                 totalFiles: totalWork,
                 completedFiles: completed,
-                currentFileName: relPath
+                currentFileName: "🗑 \(relPath)"
             )
             progressHandler(currentProgress)
 
@@ -1326,7 +1326,7 @@ final class BackupEngine {
                     let progress = BackupProgress(
                         totalFiles: mergedFiles.count,
                         completedFiles: totalFilesFound + filesSkipped,
-                        currentFileName: "Processing cached structure..."
+                        currentFileName: "Checking for changes…"
                     )
                     progressHandler(progress)
                 }
@@ -1557,7 +1557,7 @@ final class BackupEngine {
                         let totalScanned = snapshot.filesFound + snapshot.filesSkipped
                         let totalCompleted = copied + snapshot.filesSkipped
 
-                        let displayName = currentFile ?? "Scanning & copying: \(totalScanned) found, \(totalCompleted) done..."
+                        let displayName = currentFile ?? "Scanning files…"
                         let scanProgress = BackupProgress(
                             totalFiles: totalScanned,
                             completedFiles: totalCompleted,
@@ -2158,7 +2158,7 @@ final class BackupEngine {
             let currentProgress = BackupProgress(
                 totalFiles: totalWork,
                 completedFiles: completed,
-                currentFileName: relPath
+                currentFileName: "🗑 \(relPath)"
             )
             progressHandler(currentProgress)
 

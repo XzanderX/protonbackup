@@ -801,6 +801,10 @@ final class AppState: ObservableObject {
 
         // Determine status based on filename prefix (set by BackupEngine)
         let status = determineFileStatus(from: currentFile, progress: progress)
+
+        // Skip status messages (scanning, checking, etc.) — not real file operations
+        if case .indexing = status { return }
+
         let cleanFileName = cleanFileNameForDisplay(currentFile)
         let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
         let fileKey = cleanFileName
@@ -808,7 +812,7 @@ final class AppState: ObservableObject {
         // Check if this is a terminal status
         let isTerminal: Bool
         switch status {
-        case .offloaded, .copied, .skipped, .error:
+        case .offloaded, .copied, .deleted, .skipped, .error:
             isTerminal = true
         default:
             isTerminal = false
@@ -868,8 +872,14 @@ final class AppState: ObservableObject {
             return .offloaded
         }
 
-        // Check if we're still in scanning phase
-        if fileName.lowercased().contains("scanning") || fileName.lowercased().contains("indexing") {
+        // BackupEngine prefixes with 🗑 for deletions
+        if fileName.hasPrefix("🗑") {
+            return .deleted
+        }
+
+        // Status messages (not real files) — treat as indexing
+        let lower = fileName.lowercased()
+        if lower.contains("scanning") || lower.contains("indexing") || lower.contains("checking") {
             return .indexing
         }
 
@@ -902,6 +912,12 @@ final class AppState: ObservableObject {
         if clean.hasPrefix("☁ ") {
             clean = String(clean.dropFirst(2))
         } else if clean.hasPrefix("☁") {
+            clean = String(clean.dropFirst(1))
+        }
+        // Remove deletion prefix
+        if clean.hasPrefix("🗑 ") {
+            clean = String(clean.dropFirst(2))
+        } else if clean.hasPrefix("🗑") {
             clean = String(clean.dropFirst(1))
         }
         return clean

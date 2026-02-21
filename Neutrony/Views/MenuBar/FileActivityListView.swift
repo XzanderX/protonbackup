@@ -147,6 +147,10 @@ struct FileActivityRow: View {
             Image(systemName: "checkmark")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
+        case .deleted:
+            Image(systemName: "trash")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
         case .offloading:
             SpinningIndicatorView(color: .blue)
         case .offloaded:
@@ -154,7 +158,9 @@ struct FileActivityRow: View {
                 .font(.system(size: 12))
                 .foregroundColor(.blue)
         case .skipped:
-            EmptyView()
+            Image(systemName: "checkmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary.opacity(0.5))
         case .error:
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 14))
