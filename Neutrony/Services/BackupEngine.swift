@@ -332,6 +332,12 @@ actor ConcurrentBackupTracker {
         filesUpdated += 1
     }
 
+    private(set) var filesOffloaded: Int = 0
+
+    func recordFileOffloaded() {
+        filesOffloaded += 1
+    }
+
     func recordError(_ message: String) {
         errors.append(message)
     }
@@ -1286,6 +1292,13 @@ final class BackupEngine {
                                 try await copyFileWithRetry(from: file.sourceURL.path, to: file.destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                                 await tracker.recordFileUpdated()
                                 badgeService.markFileComplete(relativePath: file.relPath)
+
+                                // Offload file back to cloud-only if it's in CloudStorage and offloading is enabled
+                                if offloadAfterBackup && file.sourceURL.path.contains("/Library/CloudStorage/") {
+                                    if await syncVerifier.evictFileWithRetry(at: file.sourceURL.path, maxAttempts: 2, delaySeconds: 1.0) {
+                                        await tracker.recordFileOffloaded()
+                                    }
+                                }
                             } catch {
                                 let desc = "Failed to backup \(file.relPath): \(error.localizedDescription)"
                                 await tracker.recordError(desc)
@@ -1350,6 +1363,7 @@ final class BackupEngine {
             // Merge tracker results back into local variables
             foldersCreated = await tracker.foldersCreated
             filesUpdated = await tracker.filesUpdated
+            filesOffloaded = await tracker.filesOffloaded
             errors.append(contentsOf: await tracker.errors)
             foldersAlreadyCreated = await tracker.foldersAlreadyCreated
 
@@ -1364,7 +1378,7 @@ final class BackupEngine {
         }
 
         logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated) folders, \(filesUpdated) local files copied")
+                       message: "Phase 0 complete: \(foldersCreated) folders, \(filesUpdated) local files copied, \(filesOffloaded) offloaded")
 
         logService.log(.info, category: .backup,
                        message: "Remaining: \(cloudOnlyFilesToBackup.count) cloud-only files to download")
