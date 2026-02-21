@@ -1288,11 +1288,17 @@ final class BackupEngine {
                             }
 
                             // Re-check file status before copying (status may have changed since scan)
-                            let currentSize = (try? FileManager.default.attributesOfItem(atPath: file.sourceURL.path)[.size] as? Int64) ?? 0
-                            if currentSize == 0 {
+                            // Use stat() + st_blocks to detect cloud-only (Proton Drive reports cloud size via st_size)
+                            var recheckStat = stat()
+                            let recheckResult = stat(file.sourceURL.path, &recheckStat)
+                            let recheckBlocks = (recheckResult == 0) ? recheckStat.st_blocks : 0
+                            let recheckSize = (recheckResult == 0) ? Int64(recheckStat.st_size) : 0
+                            let isNowCloudOnly = (recheckSize == 0 || recheckBlocks == 0)
+
+                            if isNowCloudOnly {
                                 // File is now cloud-only - skip, will be handled in Phase 1
                                 logService.log(.debug, category: .backup,
-                                               message: "[Phase0] Skipping \(file.relPath) - became cloud-only since scan")
+                                               message: "[Phase0] Skipping \(file.relPath) - cloud-only (size=\(recheckSize) blocks=\(recheckBlocks))")
                                 await copyQueue.incrementProcessed()
                                 continue
                             }
@@ -1458,15 +1464,17 @@ final class BackupEngine {
                     let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
 
                     // Re-check file status before downloading (status may have changed since scan)
-                    // Use stat() for consistency with scan - FileManager might return cloud size
-                    var statInfo = stat()
-                    let statResult = stat(fileURL.path, &statInfo)
-                    let currentSize: Int64 = (statResult == 0) ? Int64(statInfo.st_size) : 0
-                    let needsDownload = (currentSize == 0)
+                    // Use stat() + st_blocks to detect if file is truly local
+                    // Proton Drive reports cloud size via st_size even for cloud-only files
+                    var p1StatInfo = stat()
+                    let p1StatResult = stat(fileURL.path, &p1StatInfo)
+                    let currentSize: Int64 = (p1StatResult == 0) ? Int64(p1StatInfo.st_size) : 0
+                    let currentBlocks = (p1StatResult == 0) ? p1StatInfo.st_blocks : 0
+                    let needsDownload = (currentSize == 0 || currentBlocks == 0)
 
-                    // DEBUG: Log the size check decision
+                    // Log the size check decision
                     logService.log(.info, category: .backup,
-                                   message: "[Phase1] CHECK: \(relPath) stat_size=\(currentSize) needsDownload=\(needsDownload)")
+                                   message: "[Phase1] CHECK: \(relPath) size=\(currentSize) blocks=\(currentBlocks) needsDownload=\(needsDownload)")
 
                     // Track if WE downloaded this file (vs user/Proton Drive downloading it)
                     var weDownloadedIt = false
@@ -2073,8 +2081,12 @@ final class BackupEngine {
                 if isDirectory {
                     results.append((itemURL, relPath, true, false, 0))
                 } else {
-                    // File exists locally - check if it's a placeholder (size 0 in CloudStorage)
-                    let isCloudOnly = (isInCloudStorage && fileSize == 0)
+                    // File exists locally - check if it's a cloud-only placeholder
+                    // Proton Drive's FileProvider reports the cloud file size via st_size
+                    // even for cloud-only files. We must check st_blocks (actual disk allocation)
+                    // to detect if the file content is really local.
+                    // st_blocks == 0 means no disk blocks allocated = cloud-only placeholder
+                    let isCloudOnly = isInCloudStorage && (fileSize == 0 || statInfo.st_blocks == 0)
                     results.append((itemURL, relPath, false, isCloudOnly, fileSize))
                 }
             } else {

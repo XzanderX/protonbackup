@@ -66,27 +66,28 @@ final class CloudSyncVerifier {
     /// Check if a file is a placeholder (not fully downloaded).
     /// Placeholder files typically have zero or very small size with special attributes.
     private func isPlaceholderFile(at path: String) -> Bool {
-        guard let attrs = try? fileManager.attributesOfItem(atPath: path) else {
-            return true
+        // Use stat() + st_blocks for reliable detection
+        // Proton Drive reports cloud size via st_size even for placeholders
+        var statInfo = stat()
+        if stat(path, &statInfo) == 0 {
+            // No disk blocks allocated = placeholder
+            if statInfo.st_blocks == 0 {
+                return true
+            }
+            // Has disk blocks = real local file
+            if statInfo.st_blocks > 0 && Int64(statInfo.st_size) > 0 {
+                return false
+            }
         }
 
-        // Check for special extended attributes that indicate placeholder
+        // Fallback: check FileProvider download status
         let url = URL(fileURLWithPath: path)
-
-        // Fetch both attributes in a single call for efficiency
         if let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]) {
             if values.isUbiquitousItem == true {
-                // It's a cloud-managed file, check if downloaded
                 if let downloadStatus = values.ubiquitousItemDownloadingStatus {
                     return downloadStatus == .notDownloaded
                 }
             }
-        }
-
-        // Check file size - placeholder files are often very small
-        let size = attrs[.size] as? Int64 ?? 0
-        if size == 0 {
-            return true
         }
 
         return false
@@ -227,17 +228,18 @@ final class CloudSyncVerifier {
     func evictFile(at path: String) -> Bool {
         let fileName = (path as NSString).lastPathComponent
 
-        // Log the full path and file state before eviction attempt using stat() for consistency
-        var statInfo = stat()
-        let statResult = stat(path, &statInfo)
-        let fileSize: Int64 = (statResult == 0) ? Int64(statInfo.st_size) : -1
+        // Log the full path and file state before eviction attempt
+        var evictStatInfo = stat()
+        let evictStatResult = stat(path, &evictStatInfo)
+        let fileSize: Int64 = (evictStatResult == 0) ? Int64(evictStatInfo.st_size) : -1
+        let fileBlocks = (evictStatResult == 0) ? evictStatInfo.st_blocks : -1
 
         logService.log(.info, category: .sync,
                        message: "EVICT START: \(fileName)")
         logService.log(.info, category: .sync,
                        message: "  path: \(path)")
         logService.log(.info, category: .sync,
-                       message: "  stat_size: \(fileSize) bytes")
+                       message: "  size=\(fileSize) blocks=\(fileBlocks)")
 
         // Use fileproviderctl which works with third-party FileProviders like Proton Drive
         // Reference: https://eclecticlight.co/2023/11/21/icloud-drive-in-sonoma-fileprovider-and-eviction/
@@ -257,16 +259,19 @@ final class CloudSyncVerifier {
             let output = String(data: outputData, encoding: .utf8) ?? ""
 
             if process.terminationStatus == 0 {
-                // Verify the eviction worked by checking file size after using stat()
+                // Verify the eviction worked by checking st_blocks after eviction
+                // Proton Drive keeps st_size as cloud size even after eviction,
+                // but st_blocks drops to 0 when file is cloud-only (no local data)
                 var newStatInfo = stat()
                 let newStatResult = stat(path, &newStatInfo)
                 let newSize: Int64 = (newStatResult == 0) ? Int64(newStatInfo.st_size) : -1
-                let success = newSize == 0
+                let newBlocks = (newStatResult == 0) ? newStatInfo.st_blocks : -1
+                let success = (newSize == 0 || newBlocks == 0)
                 logService.log(.info, category: .sync,
-                               message: "EVICT RESULT: \(fileName) exit=0 new_stat_size=\(newSize) success=\(success)")
+                               message: "EVICT RESULT: \(fileName) exit=0 size=\(newSize) blocks=\(newBlocks) success=\(success)")
                 if !success {
                     logService.log(.warning, category: .sync,
-                                   message: "  NOTE: fileproviderctl returned success but file size is still \(newSize)")
+                                   message: "  NOTE: fileproviderctl returned success but file still has local data (blocks=\(newBlocks))")
                 }
                 return success
             } else {
@@ -318,15 +323,23 @@ final class CloudSyncVerifier {
     /// Returns true if the file exists but has no local content (cloud placeholder).
     /// IMPORTANT: This method only reads metadata - it does NOT trigger downloads.
     func isCloudOnly(at path: String) -> Bool {
-        // First, try the simplest check: does the file have actual content locally?
-        // This avoids using any ubiquitous item APIs that might trigger downloads
-        if let attrs = try? fileManager.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? Int64 {
-            // If local size is > 0, the file has content - not cloud-only
-            if size > 0 {
+        // Use stat() + st_blocks for reliable cloud-only detection.
+        // Proton Drive's FileProvider reports the cloud file size via st_size
+        // even for cloud-only files. st_blocks == 0 means no local disk allocation.
+        var statInfo = stat()
+        if stat(path, &statInfo) == 0 {
+            let size = Int64(statInfo.st_size)
+            let blocks = statInfo.st_blocks
+
+            // File has local disk allocation = not cloud-only
+            if size > 0 && blocks > 0 {
                 return false
             }
-            // If local size is 0 and it's in CloudStorage, it's cloud-only
+            // No disk blocks but has size = cloud-only placeholder
+            if blocks == 0 && path.contains("/Library/CloudStorage/") {
+                return true
+            }
+            // Zero size in CloudStorage = cloud-only
             if size == 0 && path.contains("/Library/CloudStorage/") {
                 return true
             }
