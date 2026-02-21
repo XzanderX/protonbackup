@@ -1292,13 +1292,8 @@ final class BackupEngine {
                                 try await copyFileWithRetry(from: file.sourceURL.path, to: file.destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                                 await tracker.recordFileUpdated()
                                 badgeService.markFileComplete(relativePath: file.relPath)
-
-                                // Offload file back to cloud-only if it's in CloudStorage and offloading is enabled
-                                if offloadAfterBackup && file.sourceURL.path.contains("/Library/CloudStorage/") {
-                                    if await syncVerifier.evictFileWithRetry(at: file.sourceURL.path, maxAttempts: 2, delaySeconds: 1.0) {
-                                        await tracker.recordFileOffloaded()
-                                    }
-                                }
+                                // Phase 0: Local files stay local - no offloading
+                                // Offloading only happens in Phase 1 for files that were cloud-only
                             } catch {
                                 let desc = "Failed to backup \(file.relPath): \(error.localizedDescription)"
                                 await tracker.recordError(desc)
@@ -1378,7 +1373,7 @@ final class BackupEngine {
         }
 
         logService.log(.info, category: .backup,
-                       message: "Phase 0 complete: \(foldersCreated) folders, \(filesUpdated) local files copied, \(filesOffloaded) offloaded")
+                       message: "Phase 0 complete: \(foldersCreated) folders, \(filesUpdated) local files copied")
 
         logService.log(.info, category: .backup,
                        message: "Remaining: \(cloudOnlyFilesToBackup.count) cloud-only files to download")
