@@ -1135,17 +1135,21 @@ final class BackupEngine {
             usedCache = true
             let incrementalStart = Date()
 
-            // Build shouldOffload map from previous cache for preserving eviction status
-            var previousShouldOffload: [String: Bool] = [:]
-            for file in cache.files {
-                previousShouldOffload[file.relPath] = file.shouldOffload
-            }
+            // Immediately show progress so UI doesn't appear frozen
+            progressHandler(BackupProgress(
+                totalFiles: 0, completedFiles: 0,
+                currentFileName: "Checking for changes…"
+            ))
+            await Task.yield()
 
-            // Group cached files by their parent directory relPath
+            // Build shouldOffload map and group files by directory in a single pass
+            var previousShouldOffload: [String: Bool] = [:]
             var filesByDir: [String: [CachedFileInfo]] = [:]
-            for file in cache.files {
+            for (i, file) in cache.files.enumerated() {
+                previousShouldOffload[file.relPath] = file.shouldOffload
                 let parentDir = (file.relPath as NSString).deletingLastPathComponent
                 filesByDir[parentDir, default: []].append(file)
+                if i % 5000 == 0 { await Task.yield() }
             }
 
             // Check which directories changed by comparing modTimes
@@ -1171,7 +1175,7 @@ final class BackupEngine {
             }
 
             // Check each cached subdirectory
-            for dirRelPath in cache.directories {
+            for (i, dirRelPath) in cache.directories.enumerated() {
                 let fullPath = (sourcePath as NSString).appendingPathComponent(dirRelPath)
                 var dirStatInfo = stat()
                 if stat(fullPath, &dirStatInfo) == 0 {
@@ -1185,6 +1189,7 @@ final class BackupEngine {
                 } else {
                     deletedDirs.insert(dirRelPath)
                 }
+                if i % 200 == 0 { await Task.yield() }
             }
 
             logService.log(.info, category: .backup,
