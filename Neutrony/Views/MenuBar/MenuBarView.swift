@@ -130,9 +130,9 @@ struct HeaderView: View {
 
     private var statusText: String {
         if case .backing(let progress) = appState.backupState {
-            return "Backing up \(progress.completedFiles)/\(progress.totalFiles)"
+            return "Backing up \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
         } else if case .syncing(let progress) = appState.backupState {
-            return "Syncing \(progress.completedFiles)/\(progress.totalFiles)"
+            return "Syncing \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
         } else if let lastBackup = appState.config.lastSuccessfulBackup {
             return "Last backup \(lastBackup.relativeString)"
         }
@@ -210,11 +210,11 @@ struct StatusBarView: View {
             }
             return "Up to date"
         case .backing(let progress):
-            return "Backing up… \(progress.summary)"
+            return "Backing up… \(progress.summary) (\(progress.percentage)%)"
         case .syncing(let progress):
-            return "Syncing… \(progress.summary)"
+            return "Syncing… \(progress.summary) (\(progress.percentage)%)"
         case .paused(let progress):
-            return "Paused - \(progress.summary)"
+            return "Paused - \(progress.summary) (\(progress.percentage)%)"
         case .error(let message):
             return "Error: \(message)"
         case .destinationDisconnected:

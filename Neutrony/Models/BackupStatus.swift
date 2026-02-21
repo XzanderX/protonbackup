@@ -86,10 +86,15 @@ struct BackupProgress: Equatable {
     var totalFiles: Int
     var completedFiles: Int
     var currentFileName: String?
+    var currentFileProgress: Double?  // Per-file progress 0.0-1.0 (e.g. download bytes)
 
     var fraction: Double {
         guard totalFiles > 0 else { return 0 }
         return Double(completedFiles) / Double(totalFiles)
+    }
+
+    var percentage: Int {
+        Int(fraction * 100)
     }
 
     var summary: String {

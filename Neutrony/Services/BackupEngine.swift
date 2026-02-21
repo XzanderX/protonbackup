@@ -1499,7 +1499,8 @@ final class BackupEngine {
                         let currentProgress = BackupProgress(
                             totalFiles: totalAllFiles,
                             completedFiles: baseCompleted + completed,
-                            currentFileName: "⬇ \(relPath)"
+                            currentFileName: "⬇ \(relPath)",
+                            currentFileProgress: 0.0
                         )
                         progressHandler(currentProgress)
 
@@ -1523,7 +1524,15 @@ final class BackupEngine {
 
                             if needsDownload {
                                 logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADING: \(relPath)")
-                                let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120)
+                                let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120) { dlProgress in
+                                    let dlUpdate = BackupProgress(
+                                        totalFiles: totalAllFiles,
+                                        completedFiles: baseCompleted + completed,
+                                        currentFileName: "⬇ \(relPath)",
+                                        currentFileProgress: dlProgress
+                                    )
+                                    progressHandler(dlUpdate)
+                                }
 
                                 if !downloaded {
                                     await phase1.recordError("[Phase1] Download timeout: \(relPath) (placeholder kept)")

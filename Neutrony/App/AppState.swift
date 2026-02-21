@@ -18,8 +18,8 @@ final class AppState: ObservableObject {
     /// Maximum number of recent file activities to display
     private let maxRecentActivities = 10
 
-    /// Track the previous file being processed for activity updates
-    private var lastProcessedFile: String?
+    /// Track active file operations for concurrent worker safety
+    private var activeFileOperations: [String: FileActivityStatus] = [:]
 
     // MARK: - Services
 
@@ -776,7 +776,7 @@ final class AppState: ObservableObject {
     /// Clear all recent file activities.
     func clearFileActivities() {
         recentFileActivities.removeAll()
-        lastProcessedFile = nil
+        activeFileOperations.removeAll()
     }
 
     /// Handle progress update and track file activities.
@@ -802,18 +802,28 @@ final class AppState: ObservableObject {
         // Determine status based on filename prefix (set by BackupEngine)
         let status = determineFileStatus(from: currentFile, progress: progress)
         let cleanFileName = cleanFileNameForDisplay(currentFile)
+        let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
+        let fileKey = cleanFileName
 
-        // If we moved to a new file, mark the previous one as copied
-        if let lastFile = lastProcessedFile, cleanFileNameForDisplay(lastFile) != cleanFileName {
-            let (lastName, lastDestFolder) = splitFilePathForDestination(cleanFileNameForDisplay(lastFile), destRoot: destPath)
-            updateFileActivity(fileName: lastName, destinationFolder: lastDestFolder, status: .copied)
+        // Check if this is a terminal status
+        let isTerminal: Bool
+        switch status {
+        case .offloaded, .copied, .skipped, .error:
+            isTerminal = true
+        default:
+            isTerminal = false
         }
 
-        // Add new file (if not already tracked) or update existing
-        if cleanFileNameForDisplay(lastProcessedFile ?? "") != cleanFileName {
-            let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
-
-            // Try to get file size from source
+        if activeFileOperations[fileKey] != nil {
+            // File already tracked — update its status
+            updateFileActivity(fileName: fileName, destinationFolder: destFolder, status: status)
+            if isTerminal {
+                activeFileOperations.removeValue(forKey: fileKey)
+            } else {
+                activeFileOperations[fileKey] = status
+            }
+        } else {
+            // New file — add activity
             var fileSize: Int64? = nil
             if let source = sourcePath {
                 let sourceFilePath = (source as NSString).appendingPathComponent(cleanFileName)
@@ -829,12 +839,9 @@ final class AppState: ObservableObject {
                 fileSize: fileSize,
                 status: status
             ))
-            lastProcessedFile = currentFile
-        } else {
-            // Update status of current file (e.g., progress percentage)
-            let (fileName, destFolder) = splitFilePathForDestination(cleanFileName, destRoot: destPath)
-            updateFileActivity(fileName: fileName, destinationFolder: destFolder, status: status)
-            lastProcessedFile = currentFile
+            if !isTerminal {
+                activeFileOperations[fileKey] = status
+            }
         }
     }
 
@@ -847,9 +854,8 @@ final class AppState: ObservableObject {
 
         // BackupEngine prefixes with ⬇ for active downloads
         if fileName.hasPrefix("⬇") {
-            // Calculate download progress if available
-            let downloadProgress = progress.totalFiles > 0 ? Double(progress.completedFiles) / Double(progress.totalFiles) : 0.5
-            return .downloading(progress: downloadProgress)
+            // Use per-file download progress from st_blocks/st_size when available
+            return .downloading(progress: progress.currentFileProgress ?? 0.0)
         }
 
         // BackupEngine prefixes with ⬆ for offloading (evicting to cloud)
@@ -923,7 +929,7 @@ final class AppState: ObservableObject {
                 )
             }
         }
-        lastProcessedFile = nil
+        activeFileOperations.removeAll()
     }
 
     // MARK: - Account management

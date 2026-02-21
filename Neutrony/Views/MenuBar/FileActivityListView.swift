@@ -141,22 +141,14 @@ struct FileActivityRow: View {
             if let p = progress {
                 CircularProgressView(progress: p)
             } else {
-                // Indeterminate - show partial circle
-                Circle()
-                    .trim(from: 0, to: 0.25)
-                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                SpinningIndicatorView(color: .primary)
             }
         case .copied:
             Image(systemName: "checkmark")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
         case .offloading:
-            // Indeterminate upload indicator
-            Circle()
-                .trim(from: 0, to: 0.25)
-                .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+            SpinningIndicatorView(color: .blue)
         case .offloaded:
             Image(systemName: "cloud.fill")
                 .font(.system(size: 12))
@@ -181,11 +173,32 @@ struct CircularProgressView: View {
             Circle()
                 .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
 
-            // Progress arc
+            // Progress arc — animated
             Circle()
                 .trim(from: 0, to: CGFloat(min(progress, 1.0)))
                 .stroke(Color.protonPurple, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+                .animation(.easeInOut(duration: 0.3), value: progress)
         }
+    }
+}
+
+/// Spinning arc indicator for indeterminate operations (offloading, copying).
+struct SpinningIndicatorView: View {
+    let color: Color
+    @State private var isSpinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.25)
+            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            .rotationEffect(.degrees(isSpinning ? 360 : 0))
+            .animation(
+                .linear(duration: 1.0).repeatForever(autoreverses: false),
+                value: isSpinning
+            )
+            .onAppear {
+                isSpinning = true
+            }
     }
 }

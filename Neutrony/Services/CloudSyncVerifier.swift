@@ -189,11 +189,17 @@ final class CloudSyncVerifier {
 
     /// Request download and wait for completion.
     /// Returns true if file was successfully downloaded within timeout.
-    func requestDownloadAndWait(at path: String, timeout: TimeInterval = 120) async -> Bool {
+    /// Optional progressHandler reports per-file download progress (0.0-1.0) via st_blocks/st_size.
+    func requestDownloadAndWait(at path: String, timeout: TimeInterval = 120, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
         // If already synced, no need to download
         if isFileSynced(at: path) {
+            progressHandler?(1.0)
             return true
         }
+
+        // Get expected file size from st_size (Proton Drive reports cloud size even for placeholders)
+        var sizeStatInfo = stat()
+        let expectedSize: Int64 = (stat(path, &sizeStatInfo) == 0) ? Int64(sizeStatInfo.st_size) : 0
 
         // Request the download
         do {
@@ -202,17 +208,29 @@ final class CloudSyncVerifier {
             return false
         }
 
-        // Wait for completion
-        return await waitForSync(at: path, timeout: timeout)
+        // Wait for completion with progress reporting
+        return await waitForSync(at: path, timeout: timeout, expectedSize: expectedSize, progressHandler: progressHandler)
     }
 
     /// Wait for a file to be fully synced (with timeout).
-    func waitForSync(at path: String, timeout: TimeInterval = 60) async -> Bool {
+    /// Reports download progress via st_blocks when expectedSize and progressHandler are provided.
+    func waitForSync(at path: String, timeout: TimeInterval = 60, expectedSize: Int64 = 0, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
         let startTime = Date()
 
         while Date().timeIntervalSince(startTime) < timeout {
             if isFileSynced(at: path) {
+                progressHandler?(1.0)
                 return true
+            }
+
+            // Report intermediate download progress based on disk blocks allocated
+            if expectedSize > 0, let handler = progressHandler {
+                var currentStat = stat()
+                if stat(path, &currentStat) == 0 {
+                    let downloadedBytes = Int64(currentStat.st_blocks) * 512
+                    let fraction = min(Double(downloadedBytes) / Double(expectedSize), 0.99)
+                    handler(max(fraction, 0.0))
+                }
             }
 
             // Wait a bit before checking again
