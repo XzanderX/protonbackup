@@ -1403,6 +1403,9 @@ final class BackupEngine {
         // Track successfully evicted files to update cache
         var evictedFiles = Set<String>()
 
+        logService.log(.info, category: .backup,
+                       message: "Phase 1 starting: \(cloudOnlyFilesToBackup.count) cloud files, offloadAfterBackup=\(offloadAfterBackup)")
+
         if !cloudOnlyFilesToBackup.isEmpty {
             logService.log(.info, category: .backup,
                            message: "Phase 1: Downloading \(cloudOnlyFilesToBackup.count) cloud-only files...")
@@ -1450,18 +1453,22 @@ final class BackupEngine {
 
                     // Offload (evict) file back to cloud-only if requested
                     // This restores the file to its original cloud-only state
+                    logService.log(.info, category: .backup, message: "File copied, offloadAfterBackup=\(offloadAfterBackup) for: \(relPath)")
                     if offloadAfterBackup {
-                        logService.log(.debug, category: .backup, message: "Attempting to offload: \(relPath)")
+                        logService.log(.info, category: .backup, message: ">>> STARTING OFFLOAD for: \(relPath)")
+                        logService.log(.info, category: .backup, message: ">>> Source path: \(fileURL.path)")
                         if await syncVerifier.evictFileWithRetry(at: fileURL.path) {
                             filesOffloaded += 1
                             evictedFiles.insert(relPath)  // Track for cache update
-                            logService.log(.info, category: .backup, message: "Offloaded to cloud: \(relPath)")
+                            logService.log(.info, category: .backup, message: ">>> OFFLOAD SUCCESS: \(relPath)")
                         } else {
-                            let warn = "Could not offload \(relPath) - file remains downloaded locally"
+                            let warn = ">>> OFFLOAD FAILED: \(relPath) - file remains downloaded locally"
                             errors.append(warn)
                             logService.log(.warning, category: .backup, message: warn, filePath: relPath)
                             // File stays in shouldOffload list for retry on next backup
                         }
+                    } else {
+                        logService.log(.info, category: .backup, message: ">>> OFFLOAD DISABLED - skipping: \(relPath)")
                     }
 
                 } catch {

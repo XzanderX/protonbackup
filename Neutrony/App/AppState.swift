@@ -342,9 +342,13 @@ final class AppState: ObservableObject {
                     return
                 }
 
+                logService.log(.info, category: .backup,
+                               message: "Config: onDemandDownload=\(config.onDemandDownload), offloadAfterBackup=\(config.offloadAfterBackup)")
+
                 if config.onDemandDownload {
                     // On-demand mode: download cloud-only files as needed, optionally offload after
                     // This respects user's Proton Drive sync settings
+                    logService.log(.info, category: .backup, message: "Using on-demand backup mode with offload=\(config.offloadAfterBackup)")
                     summary = try await backupEngine.performOnDemandBackup(
                         sourcePath: sourcePath,
                         destinationPath: destPath,
