@@ -534,15 +534,12 @@ final class BackupEngine {
     private func scanDestinationSizes(destURL: URL) -> [String: Int64] {
         let fm = FileManager.default
         let basePath = destURL.path
-        var results: [String: Int64] = [:]
-        let lock = NSLock()
 
-        // Recursive scan using stat() - much faster than attributesOfItem
-        func scanDir(_ dirPath: String) {
-            guard let items = try? fm.contentsOfDirectory(atPath: dirPath) else { return }
+        // Recursive scan using stat() - returns local results only (no locking needed)
+        func scanDir(_ dirPath: String) -> [String: Int64] {
+            guard let items = try? fm.contentsOfDirectory(atPath: dirPath) else { return [:] }
 
-            var subdirs: [String] = []
-            var localResults: [(String, Int64)] = []
+            var localResults: [String: Int64] = [:]
 
             for itemName in items {
                 // Skip hidden files and system files
@@ -556,35 +553,31 @@ final class BackupEngine {
 
                 let isDirectory = (statInfo.st_mode & S_IFMT) == S_IFDIR
                 if isDirectory {
-                    subdirs.append(itemPath)
+                    // Recurse and merge
+                    let subResults = scanDir(itemPath)
+                    localResults.merge(subResults) { _, new in new }
                 } else {
                     // Compute relative path
                     var relPath = String(itemPath.dropFirst(basePath.count))
                     if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
-                    localResults.append((relPath, Int64(statInfo.st_size)))
+                    localResults[relPath] = Int64(statInfo.st_size)
                 }
             }
 
-            // Batch insert results
-            if !localResults.isEmpty {
-                lock.lock()
-                for (path, size) in localResults {
-                    results[path] = size
-                }
-                lock.unlock()
-            }
-
-            // Recurse into subdirectories
-            for subdir in subdirs {
-                scanDir(subdir)
-            }
+            return localResults
         }
 
         // Start scan - use DispatchQueue for parallelism on top-level dirs
-        guard let topItems = try? fm.contentsOfDirectory(atPath: basePath) else { return results }
+        guard let topItems = try? fm.contentsOfDirectory(atPath: basePath) else { return [:] }
 
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "com.neutrony.destScan", attributes: .concurrent)
+
+        // Collect worker results - lock only used once per top-level dir, not during scan
+        var workerResults: [[String: Int64]] = []
+        let resultsLock = NSLock()
+
+        var topLevelFiles: [String: Int64] = [:]
 
         for itemName in topItems {
             if itemName.hasPrefix(".") || itemName == "_versions" { continue }
@@ -597,18 +590,28 @@ final class BackupEngine {
             if isDirectory {
                 group.enter()
                 queue.async {
-                    scanDir(itemPath)
+                    let results = scanDir(itemPath)
+                    resultsLock.lock()
+                    workerResults.append(results)
+                    resultsLock.unlock()
                     group.leave()
                 }
             } else {
                 var relPath = String(itemPath.dropFirst(basePath.count))
                 if relPath.hasPrefix("/") { relPath = String(relPath.dropFirst()) }
-                results[relPath] = Int64(statInfo.st_size)
+                topLevelFiles[relPath] = Int64(statInfo.st_size)
             }
         }
 
         group.wait()
-        return results
+
+        // Merge all results - single-threaded merge after parallel work completes
+        var finalResults = topLevelFiles
+        for workerResult in workerResults {
+            finalResults.merge(workerResult) { _, new in new }
+        }
+
+        return finalResults
     }
 
     // MARK: - Public API
