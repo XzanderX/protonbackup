@@ -26,17 +26,13 @@ struct CachedFileInfo: Codable {
 
 /// Cache of the source file structure to speed up subsequent backups
 struct FileStructureCache: Codable {
-    var version: Int = 1
+    var version: Int = 2
     let sourcePath: String
     let scanDate: Date
     let files: [CachedFileInfo]
     let directories: [String]
+    let directoryModTimes: [String: TimeInterval]?  // relPath → modTime (optional for compat)
     let totalScanned: Int
-
-    /// Cache is considered fresh if less than 4 hours old
-    var isFresh: Bool {
-        Date().timeIntervalSince(scanDate) < 14400
-    }
 }
 
 /// Cache of destination file sizes to speed up reconnection
@@ -65,6 +61,7 @@ actor ScanResultsCollector {
     private(set) var totalFilesFound: Int = 0
     private(set) var filesSkipped: Int = 0
     private(set) var directoriesScanned: Int = 0
+    private(set) var directoryModTimes: [String: TimeInterval] = [:]
 
     /// Destination data — set once via configure(), read many times without copying
     private var destFileSizes: [String: Int64] = [:]
@@ -131,6 +128,10 @@ actor ScanResultsCollector {
 
     func incrementDirectoriesScanned() {
         directoriesScanned += 1
+    }
+
+    func addDirectoryModTime(relPath: String, modTime: TimeInterval) {
+        directoryModTimes[relPath] = modTime
     }
 
     func getPlaceholderCount() -> Int {
@@ -454,16 +455,16 @@ final class BackupEngine {
                 return nil
             }
 
-            // Check if cache is fresh
-            if cache.isFresh {
+            // Reject old cache versions that lack directoryModTimes
+            guard cache.version >= 2 else {
                 logService.log(.info, category: .backup,
-                               message: "Loaded structure cache: \(cache.files.count) files, \(cache.directories.count) dirs (age: \(Int(Date().timeIntervalSince(cache.scanDate)))s)")
-                return cache
-            } else {
-                logService.log(.info, category: .backup,
-                               message: "Cache is stale (age: \(Int(Date().timeIntervalSince(cache.scanDate)/60))min), will rescan")
+                               message: "Cache version \(cache.version) too old, will rescan")
                 return nil
             }
+
+            logService.log(.info, category: .backup,
+                           message: "Loaded structure cache: \(cache.files.count) files, \(cache.directories.count) dirs (age: \(Int(Date().timeIntervalSince(cache.scanDate)))s)")
+            return cache
         } catch {
             logService.log(.warning, category: .backup, message: "Failed to load cache: \(error.localizedDescription)")
             return nil
@@ -495,12 +496,13 @@ final class BackupEngine {
     }
 
     /// Save the scanned file structure to cache
-    private func saveCache(backupRoot: String, sourcePath: String, files: [CachedFileInfo], directories: [String]) {
+    private func saveCache(backupRoot: String, sourcePath: String, files: [CachedFileInfo], directories: [String], directoryModTimes: [String: TimeInterval] = [:]) {
         let cache = FileStructureCache(
             sourcePath: sourcePath,
             scanDate: Date(),
             files: files,
             directories: directories,
+            directoryModTimes: directoryModTimes,
             totalScanned: files.count + directories.count
         )
 
@@ -1125,20 +1127,149 @@ final class BackupEngine {
         var totalFilesFound = 0
         var cachedFileInfos: [CachedFileInfo] = []  // For saving to cache
         var cachedDirectories: [String] = []  // For saving to cache
+        var cachedDirModTimes: [String: TimeInterval] = [:]  // For incremental scan
         var usedCache = false
 
         // Try to load cached structure for faster startup
         if let cache = loadCache(backupRoot: backupRoot, sourcePath: sourcePath) {
-            logService.log(.info, category: .backup,
-                           message: "Using cached structure (\(cache.files.count) files, \(cache.directories.count) dirs)")
             usedCache = true
+            let incrementalStart = Date()
 
-            // Copy cache data for later updates (e.g., after eviction)
-            cachedFileInfos = cache.files
-            cachedDirectories = cache.directories
+            // Build shouldOffload map from previous cache for preserving eviction status
+            var previousShouldOffload: [String: Bool] = [:]
+            for file in cache.files {
+                previousShouldOffload[file.relPath] = file.shouldOffload
+            }
 
-            // Create all directories from cache
-            for dirPath in cache.directories {
+            // Group cached files by their parent directory relPath
+            var filesByDir: [String: [CachedFileInfo]] = [:]
+            for file in cache.files {
+                let parentDir = (file.relPath as NSString).deletingLastPathComponent
+                filesByDir[parentDir, default: []].append(file)
+            }
+
+            // Check which directories changed by comparing modTimes
+            let cachedDirModTimesMap = cache.directoryModTimes ?? [:]
+            var changedDirs: Set<String> = []
+            var newDirModTimes: [String: TimeInterval] = [:]
+            var deletedDirs: Set<String> = []
+
+            // Build set of all known directory relPaths (including root "")
+            var knownDirs = Set(cache.directories)
+            knownDirs.insert("")  // root is always known
+
+            // Check root directory modTime
+            var rootStatInfo = stat()
+            if stat(sourcePath, &rootStatInfo) == 0 {
+                let rootModTime = TimeInterval(rootStatInfo.st_mtimespec.tv_sec) + TimeInterval(rootStatInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                newDirModTimes[""] = rootModTime
+                if let cachedMtime = cachedDirModTimesMap[""], rootModTime == cachedMtime {
+                    // Root unchanged
+                } else {
+                    changedDirs.insert("")
+                }
+            }
+
+            // Check each cached subdirectory
+            for dirRelPath in cache.directories {
+                let fullPath = (sourcePath as NSString).appendingPathComponent(dirRelPath)
+                var dirStatInfo = stat()
+                if stat(fullPath, &dirStatInfo) == 0 {
+                    let currentModTime = TimeInterval(dirStatInfo.st_mtimespec.tv_sec) + TimeInterval(dirStatInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                    newDirModTimes[dirRelPath] = currentModTime
+                    if let cachedMtime = cachedDirModTimesMap[dirRelPath], currentModTime == cachedMtime {
+                        // Unchanged
+                    } else {
+                        changedDirs.insert(dirRelPath)
+                    }
+                } else {
+                    deletedDirs.insert(dirRelPath)
+                }
+            }
+
+            logService.log(.info, category: .backup,
+                           message: "Incremental scan: \(changedDirs.count) dirs changed, \(deletedDirs.count) deleted out of \(knownDirs.count) total")
+
+            // Rescan changed directories and discover new ones
+            var dirsToScan: [String] = Array(changedDirs)
+            var freshFilesByDir: [String: [CachedFileInfo]] = [:]
+
+            while !dirsToScan.isEmpty {
+                let dirRelPath = dirsToScan.removeFirst()
+                let dirURL: URL
+                if dirRelPath.isEmpty {
+                    dirURL = sourceURL
+                } else {
+                    dirURL = URL(fileURLWithPath: (sourcePath as NSString).appendingPathComponent(dirRelPath))
+                }
+
+                if let items = scanDirectoryContents(directory: dirURL, sourceURL: sourceURL, backupRoot: backupRoot) {
+                    var freshFiles: [CachedFileInfo] = []
+                    for item in items {
+                        if item.isDir {
+                            // Discover new subdirectories not in cache
+                            if !knownDirs.contains(item.relPath) && !deletedDirs.contains(item.relPath) {
+                                knownDirs.insert(item.relPath)
+                                dirsToScan.append(item.relPath)
+                                // Stat new dir for its modTime
+                                var newDirStat = stat()
+                                if stat(item.item.path, &newDirStat) == 0 {
+                                    let dirMtime = TimeInterval(newDirStat.st_mtimespec.tv_sec) + TimeInterval(newDirStat.st_mtimespec.tv_nsec) / 1_000_000_000
+                                    newDirModTimes[item.relPath] = dirMtime
+                                }
+                            }
+                        } else {
+                            let shouldOffload = item.isCloudOnly || (previousShouldOffload[item.relPath] ?? false)
+                            freshFiles.append(CachedFileInfo(
+                                relPath: item.relPath,
+                                isDirectory: false,
+                                isCloudOnly: item.isCloudOnly,
+                                size: item.localSize,
+                                modTime: Date(timeIntervalSince1970: item.modTime),
+                                shouldOffload: shouldOffload
+                            ))
+                        }
+                    }
+                    freshFilesByDir[dirRelPath] = freshFiles
+                }
+            }
+
+            // Build merged file list and directory list
+            var mergedFiles: [CachedFileInfo] = []
+            var mergedDirs: [String] = []
+
+            // Handle root files
+            if changedDirs.contains("") {
+                if let freshFiles = freshFilesByDir[""] { mergedFiles.append(contentsOf: freshFiles) }
+            } else {
+                if let cachedFiles = filesByDir[""] { mergedFiles.append(contentsOf: cachedFiles) }
+            }
+
+            // Handle cached subdirectories
+            for dirRelPath in cache.directories {
+                if deletedDirs.contains(dirRelPath) { continue }
+                mergedDirs.append(dirRelPath)
+                if changedDirs.contains(dirRelPath) {
+                    if let freshFiles = freshFilesByDir[dirRelPath] { mergedFiles.append(contentsOf: freshFiles) }
+                } else {
+                    if let cachedFiles = filesByDir[dirRelPath] { mergedFiles.append(contentsOf: cachedFiles) }
+                }
+            }
+
+            // Add newly discovered directories and their files
+            for dirRelPath in knownDirs {
+                if dirRelPath.isEmpty || cache.directories.contains(dirRelPath) || deletedDirs.contains(dirRelPath) { continue }
+                mergedDirs.append(dirRelPath)
+                if let freshFiles = freshFilesByDir[dirRelPath] { mergedFiles.append(contentsOf: freshFiles) }
+            }
+
+            // Update outer-scope cache data
+            cachedFileInfos = mergedFiles
+            cachedDirectories = mergedDirs
+            cachedDirModTimes = newDirModTimes
+
+            // Create all directories at destination
+            for dirPath in mergedDirs {
                 let destDirPath = (backupRoot as NSString).appendingPathComponent(dirPath)
                 if !foldersAlreadyCreated.contains(destDirPath) {
                     try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
@@ -1147,12 +1278,11 @@ final class BackupEngine {
                 }
             }
 
-            // Process files from cache
-            for fileInfo in cache.files {
+            // Process all merged files — determine which need backup
+            for fileInfo in mergedFiles {
                 let destFilePath = (backupRoot as NSString).appendingPathComponent(fileInfo.relPath)
                 let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
 
-                // Determine if backup needed — compare size first, then modTime
                 let needsBackup: Bool
                 if let existingSize = destFileSizes[fileInfo.relPath] {
                     if fileInfo.isCloudOnly {
@@ -1171,9 +1301,7 @@ final class BackupEngine {
                 }
 
                 if needsBackup {
-                    // Create placeholder if doesn't exist
                     if !fm.fileExists(atPath: destFilePath) {
-                        // Ensure parent directory exists
                         let destParent = (destFilePath as NSString).deletingLastPathComponent
                         if !foldersAlreadyCreated.contains(destParent) {
                             try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true)
@@ -1183,7 +1311,6 @@ final class BackupEngine {
                         placeholdersCreated += 1
                     }
 
-                    // Categorize for later phases
                     if fileInfo.isCloudOnly {
                         cloudOnlyFilesToBackup.append((fileURL, fileInfo.relPath, nil))
                     } else {
@@ -1194,11 +1321,10 @@ final class BackupEngine {
                     filesSkipped += 1
                 }
 
-                // Update progress periodically
                 if (totalFilesFound + filesSkipped) % 1000 == 0 {
                     await Task.yield()
                     let progress = BackupProgress(
-                        totalFiles: cache.files.count,
+                        totalFiles: mergedFiles.count,
                         completedFiles: totalFilesFound + filesSkipped,
                         currentFileName: "Processing cached structure..."
                     )
@@ -1206,8 +1332,12 @@ final class BackupEngine {
                 }
             }
 
+            let incrementalDuration = Date().timeIntervalSince(incrementalStart)
             logService.log(.info, category: .backup,
-                           message: "Cache processed: \(totalFilesFound) files to backup, \(filesSkipped) skipped")
+                           message: "Incremental scan complete in \(String(format: "%.2f", incrementalDuration))s: \(changedDirs.count) dirs rescanned, \(totalFilesFound) to backup, \(filesSkipped) skipped")
+
+            // Save updated cache with fresh directory modTimes
+            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: cachedFileInfos, directories: cachedDirectories, directoryModTimes: cachedDirModTimes)
         }
 
         // Only do full scan if we didn't use cached structure
@@ -1301,6 +1431,14 @@ final class BackupEngine {
 
                                 if !subdirs.isEmpty {
                                     await dirQueue.addDirectories(subdirs)
+                                }
+
+                                // Record directory's own modTime for incremental scanning
+                                var dirStatInfo = stat()
+                                if stat(directory.path, &dirStatInfo) == 0 {
+                                    let dirModTime = TimeInterval(dirStatInfo.st_mtimespec.tv_sec) + TimeInterval(dirStatInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                                    let dirRelPath = self.relativePath(from: sourceURL, to: directory)
+                                    await collector.addDirectoryModTime(relPath: dirRelPath, modTime: dirModTime)
                                 }
 
                                 // Use the new method that returns local files for immediate copying
@@ -1442,6 +1580,7 @@ final class BackupEngine {
             cachedFileInfos = await collector.cachedFileInfos
             cachedDirectories = await collector.cachedDirectories
             cloudOnlyFilesToBackup = await collector.cloudOnlyFiles
+            cachedDirModTimes = await collector.directoryModTimes
 
             // Merge tracker results back into local variables
             foldersCreated = await tracker.foldersCreated
@@ -1457,7 +1596,7 @@ final class BackupEngine {
                            message: "[Phase0] Scan+Copy complete: \(dirsScanned) dirs, \(totalFilesFound) files, \(copiedDuringScan) copied in \(String(format: "%.1f", scanDuration))s")
 
             // Save the structure cache for faster subsequent backups
-            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: cachedFileInfos, directories: cachedDirectories)
+            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: cachedFileInfos, directories: cachedDirectories, directoryModTimes: cachedDirModTimes)
         }
 
         logService.log(.info, category: .backup,
@@ -1466,15 +1605,8 @@ final class BackupEngine {
         logService.log(.info, category: .backup,
                        message: "[Phase0] Remaining for Phase1: \(cloudOnlyFilesToBackup.count) cloud-only files")
 
-        // Calculate files to delete (use cached file info for source relative paths)
-        var sourceRelative: Set<String>
-        if usedCache {
-            // From cache: combine local + cloud files
-            sourceRelative = Set(localFilesToBackup.map { $0.relPath } + cloudOnlyFilesToBackup.map { $0.relPath })
-        } else {
-            // From scan: use the tracked source paths
-            sourceRelative = Set(cachedFileInfos.map { $0.relPath })
-        }
+        // Calculate files to delete — all source files (cached or scanned) vs destination
+        let sourceRelative = Set(cachedFileInfos.map { $0.relPath })
         let destRelative = Set(destFileSizes.keys)
         let filesToDelete = destRelative.subtracting(sourceRelative)
 
@@ -1794,7 +1926,7 @@ final class BackupEngine {
                 }
             }
             // Save updated cache
-            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: updatedCachedInfos, directories: cachedDirectories)
+            saveCache(backupRoot: backupRoot, sourcePath: sourcePath, files: updatedCachedInfos, directories: cachedDirectories, directoryModTimes: cachedDirModTimes)
             logService.log(.info, category: .backup,
                            message: "Updated cache: \(evictedFiles.count) files marked as evicted")
         }
