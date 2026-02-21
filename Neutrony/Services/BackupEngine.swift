@@ -1267,16 +1267,12 @@ final class BackupEngine {
                 for _ in 0..<maxConcurrentOperations {
                     group.addTask { [self] in
                         while true {
-                            // Check if there's work or if more might come
-                            let queueDone = await copyQueue.isDone()
-                            let scanDone = await dirQueue.isFinished()
-                            if queueDone && scanDone {
-                                break
-                            }
-
                             // Try to get a file to copy
                             guard let file = await copyQueue.dequeue() else {
-                                // No files ready yet, wait briefly
+                                // No files in queue - exit if scan is done (no more will come)
+                                if !(await dirQueue.hasWork()) {
+                                    break
+                                }
                                 try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
                                 continue
                             }
@@ -1330,14 +1326,15 @@ final class BackupEngine {
                     var lastFound = 0
                     var lastCopied = 0
                     while true {
-                        let dirHasWork = await dirQueue.hasWork()
-                        let copyHasWork = await copyQueue.hasWork()
-                        guard dirHasWork || copyHasWork else { break }
-
                         try? await Task.sleep(nanoseconds: 200_000_000) // Update every 200ms
+
                         let dirsScanned = await collector.directoriesScanned
                         let filesFound = await collector.totalFilesFound
                         let (queued, copied, _) = await copyQueue.getStats()
+
+                        // Exit when scan is done and all queued files are copied
+                        let scanRunning = await dirQueue.hasWork()
+                        if !scanRunning && queued == copied { break }
 
                         let elapsed = Date().timeIntervalSince(scanStartTime)
                         let scanRate = elapsed > 0 ? Double(dirsScanned) / elapsed : 0
