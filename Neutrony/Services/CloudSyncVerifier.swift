@@ -224,98 +224,64 @@ final class CloudSyncVerifier {
 
     /// Evict (offload) a file to free up local space.
     /// The file will become cloud-only and can be downloaded again later.
-    /// Uses fileproviderctl which works with third-party FileProviders like Proton Drive.
     func evictFile(at path: String) -> Bool {
         let fileName = (path as NSString).lastPathComponent
+        let url = URL(fileURLWithPath: path)
 
-        // Log the full path and file state before eviction attempt
+        // Check current state — skip if already cloud-only
         var evictStatInfo = stat()
         let evictStatResult = stat(path, &evictStatInfo)
         let fileSize: Int64 = (evictStatResult == 0) ? Int64(evictStatInfo.st_size) : -1
         let fileBlocks = (evictStatResult == 0) ? evictStatInfo.st_blocks : -1
 
-        logService.log(.info, category: .sync,
-                       message: "EVICT START: \(fileName)")
-        logService.log(.info, category: .sync,
-                       message: "  path: \(path)")
-        logService.log(.info, category: .sync,
-                       message: "  size=\(fileSize) blocks=\(fileBlocks)")
+        if evictStatResult == 0 && (fileSize == 0 || fileBlocks == 0) {
+            logService.log(.debug, category: .sync,
+                           message: "EVICT SKIP: \(fileName) already cloud-only (size=\(fileSize) blocks=\(fileBlocks))")
+            return true
+        }
 
-        // Use fileproviderctl which works with third-party FileProviders like Proton Drive
-        // Reference: https://eclecticlight.co/2023/11/21/icloud-drive-in-sonoma-fileprovider-and-eviction/
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/fileproviderctl")
-        process.arguments = ["evict", path]
+        logService.log(.info, category: .sync,
+                       message: "EVICT START: \(fileName) size=\(fileSize) blocks=\(fileBlocks)")
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
+        // Use NSFileManager.evictUbiquitousItem — works with both iCloud and third-party FileProviders
         do {
-            try process.run()
-            process.waitUntilExit()
+            try FileManager.default.evictUbiquitousItem(at: url)
 
-            let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-
-            if process.terminationStatus == 0 {
-                // Verify the eviction worked by checking st_blocks after eviction
-                // Proton Drive keeps st_size as cloud size even after eviction,
-                // but st_blocks drops to 0 when file is cloud-only (no local data)
-                var newStatInfo = stat()
-                let newStatResult = stat(path, &newStatInfo)
-                let newSize: Int64 = (newStatResult == 0) ? Int64(newStatInfo.st_size) : -1
-                let newBlocks = (newStatResult == 0) ? newStatInfo.st_blocks : -1
-                let success = (newSize == 0 || newBlocks == 0)
-                logService.log(.info, category: .sync,
-                               message: "EVICT RESULT: \(fileName) exit=0 size=\(newSize) blocks=\(newBlocks) success=\(success)")
-                if !success {
-                    logService.log(.warning, category: .sync,
-                                   message: "  NOTE: fileproviderctl returned success but file still has local data (blocks=\(newBlocks))")
-                }
-                return success
-            } else {
-                let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                logService.log(.warning, category: .sync,
-                               message: "EVICT FAILED: \(fileName) exit=\(process.terminationStatus)")
-                logService.log(.warning, category: .sync,
-                               message: "  output: \(trimmedOutput)")
-                return false
-            }
+            // Verify eviction by checking st_blocks
+            var newStatInfo = stat()
+            let newStatResult = stat(path, &newStatInfo)
+            let newBlocks = (newStatResult == 0) ? newStatInfo.st_blocks : -1
+            let newSize: Int64 = (newStatResult == 0) ? Int64(newStatInfo.st_size) : -1
+            let success = (newSize == 0 || newBlocks == 0)
+            logService.log(.info, category: .sync,
+                           message: "EVICT RESULT: \(fileName) size=\(newSize) blocks=\(newBlocks) success=\(success)")
+            return success
         } catch {
-            logService.log(.error, category: .sync,
-                           message: "fileproviderctl failed to run: \(error.localizedDescription)")
+            logService.log(.warning, category: .sync,
+                           message: "EVICT FAILED: \(fileName) - \(error.localizedDescription)")
             return false
         }
     }
 
     /// Evict a file with retry logic.
     /// The FileProvider may need time after a download/copy before accepting eviction.
-    func evictFileWithRetry(at path: String, maxAttempts: Int = 5, delaySeconds: Double = 2.0) async -> Bool {
+    func evictFileWithRetry(at path: String, maxAttempts: Int = 3, delaySeconds: Double = 1.0) async -> Bool {
         let fileName = (path as NSString).lastPathComponent
-        logService.log(.info, category: .sync,
-                       message: "========== EVICT_WITH_RETRY ==========")
-        logService.log(.info, category: .sync,
-                       message: "File: \(fileName)")
-        logService.log(.info, category: .sync,
-                       message: "Max attempts: \(maxAttempts), delay: \(delaySeconds)s")
 
         for attempt in 1...maxAttempts {
             if evictFile(at: path) {
-                logService.log(.info, category: .sync,
-                               message: "Eviction completed on attempt \(attempt) for \(fileName)")
                 return true
             }
 
             if attempt < maxAttempts {
-                logService.log(.info, category: .sync,
-                               message: "Retry \(attempt)/\(maxAttempts) for \(fileName), waiting \(delaySeconds)s...")
+                logService.log(.debug, category: .sync,
+                               message: "Evict retry \(attempt)/\(maxAttempts) for \(fileName)")
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
         }
 
-        logService.log(.error, category: .sync,
-                       message: "FAILED to evict \(fileName) after \(maxAttempts) attempts - file remains downloaded locally")
+        logService.log(.warning, category: .sync,
+                       message: "Evict failed after \(maxAttempts) attempts: \(fileName)")
         return false
     }
 
