@@ -130,23 +130,21 @@ struct HeaderView: View {
 
     private var statusText: String {
         if appState.backupState.isRunning || appState.backupState.isPaused {
-            return volumeUsageText ?? "Backing up…"
+            return volumeFreeSpaceText ?? "Backing up…"
         } else if let lastBackup = appState.config.lastSuccessfulBackup {
             return "Last backup \(lastBackup.relativeString)"
         }
         return "Ready"
     }
 
-    private var volumeUsageText: String? {
+    private var volumeFreeSpaceText: String? {
         guard let path = appState.destinationPath,
               let values = try? URL(fileURLWithPath: path).resourceValues(
-                  forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
-              let total = values.volumeTotalCapacity,
-              let available = values.volumeAvailableCapacity else { return nil }
-        let used = Int64(total - available)
+                  forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+              let available = values.volumeAvailableCapacityForImportantUsage else { return nil }
         let fmt = ByteCountFormatter()
         fmt.countStyle = .file
-        return "Using \(fmt.string(fromByteCount: used)) of \(fmt.string(fromByteCount: Int64(total)))"
+        return "\(fmt.string(fromByteCount: available)) free on drive"
     }
 
     private func openDestinationFolder() {
