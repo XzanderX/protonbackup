@@ -129,20 +129,24 @@ struct HeaderView: View {
     }
 
     private var statusText: String {
-        if case .backing(let progress) = appState.backupState {
-            if progress.totalFiles > 0 {
-                return "Backing up \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
-            }
-            return "Scanning files…"
-        } else if case .syncing(let progress) = appState.backupState {
-            if progress.totalFiles > 0 {
-                return "Downloading \(progress.completedFiles)/\(progress.totalFiles) (\(progress.percentage)%)"
-            }
-            return "Scanning Proton Drive…"
+        if appState.backupState.isRunning || appState.backupState.isPaused {
+            return volumeUsageText ?? "Backing up…"
         } else if let lastBackup = appState.config.lastSuccessfulBackup {
             return "Last backup \(lastBackup.relativeString)"
         }
         return "Ready"
+    }
+
+    private var volumeUsageText: String? {
+        guard let path = appState.destinationPath,
+              let values = try? URL(fileURLWithPath: path).resourceValues(
+                  forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
+              let total = values.volumeTotalCapacity,
+              let available = values.volumeAvailableCapacity else { return nil }
+        let used = Int64(total - available)
+        let fmt = ByteCountFormatter()
+        fmt.countStyle = .file
+        return "Using \(fmt.string(fromByteCount: used)) of \(fmt.string(fromByteCount: Int64(total)))"
     }
 
     private func openDestinationFolder() {

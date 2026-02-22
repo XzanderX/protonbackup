@@ -26,7 +26,7 @@ final class VersionManager {
         let dateString = Self.dateFormatter.string(from: Date())
         let versionsBase = (backupRoot as NSString).appendingPathComponent("_versions")
         let datedFolder = (versionsBase as NSString).appendingPathComponent(dateString)
-        let destPath = (datedFolder as NSString).appendingPathComponent(relativePath)
+        let destPath = (datedFolder as NSString).appendingPathComponent(relativePath.sanitizedForExternalVolume())
 
         // Ensure parent directory exists
         let destParent = (destPath as NSString).deletingLastPathComponent

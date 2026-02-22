@@ -161,7 +161,7 @@ actor ScanResultsCollector {
     ) {
         for item in items {
             if item.isDir {
-                let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath.sanitizedForExternalVolume())
                 foldersToCreate.insert(destDirPath)
                 cachedDirectories.append(item.relPath)
             } else {
@@ -179,14 +179,15 @@ actor ScanResultsCollector {
                 ))
 
                 // Determine if backup needed
-                let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                let sanitizedRelPath = item.relPath.sanitizedForExternalVolume()
+                let destFilePath = (backupRoot as NSString).appendingPathComponent(sanitizedRelPath)
                 let needsBackup: Bool
-                if let existingSize = destFileSizes[item.relPath] {
+                if let existingSize = destFileSizes[sanitizedRelPath] {
                     if item.isCloudOnly {
                         needsBackup = existingSize == 0
                     } else if item.localSize != existingSize {
                         needsBackup = true
-                    } else if let destMtime = destModTimes[item.relPath], item.modTime > destMtime + 1.0 {
+                    } else if let destMtime = destModTimes[sanitizedRelPath], item.modTime > destMtime + 1.0 {
                         needsBackup = true  // Same size but source is newer
                     } else {
                         needsBackup = false
@@ -214,7 +215,7 @@ actor ScanResultsCollector {
 
         for item in items {
             if item.isDir {
-                let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                let destDirPath = (backupRoot as NSString).appendingPathComponent(item.relPath.sanitizedForExternalVolume())
                 foldersToCreate.insert(destDirPath)
                 cachedDirectories.append(item.relPath)
             } else {
@@ -233,14 +234,15 @@ actor ScanResultsCollector {
                 ))
 
                 // Determine if backup needed — compare size first, then modTime
-                let destFilePath = (backupRoot as NSString).appendingPathComponent(item.relPath)
+                let sanitizedRelPath = item.relPath.sanitizedForExternalVolume()
+                let destFilePath = (backupRoot as NSString).appendingPathComponent(sanitizedRelPath)
                 let needsBackup: Bool
-                if let existingSize = destFileSizes[item.relPath] {
+                if let existingSize = destFileSizes[sanitizedRelPath] {
                     if item.isCloudOnly {
                         needsBackup = existingSize == 0
                     } else if item.localSize != existingSize {
                         needsBackup = true
-                    } else if let destMtime = destModTimes[item.relPath], item.modTime > destMtime + 1.0 {
+                    } else if let destMtime = destModTimes[sanitizedRelPath], item.modTime > destMtime + 1.0 {
                         needsBackup = true  // Same size but source is newer
                     } else {
                         needsBackup = false
@@ -719,8 +721,8 @@ final class BackupEngine {
         let destURL = URL(fileURLWithPath: backupRoot)
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
-        // Build relative path sets
-        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0) })
+        // Build relative path sets (sanitize source paths to match destination filesystem names)
+        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0).sanitizedForExternalVolume() })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
 
         // Find files to copy (new or modified), filtering out temp/system files
@@ -734,7 +736,7 @@ final class BackupEngine {
                 continue
             }
 
-            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
+            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
 
             if !fm.fileExists(atPath: destFilePath) {
                 filesToCopy.append((fileURL, relPath))
@@ -778,7 +780,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                 try await copyFileWithRetry(from: sourceURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                 filesUpdated += 1
             } catch {
@@ -805,7 +807,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                 try handleDeletion(
                     atPath: destPath,
                     relativePath: relPath,
@@ -911,8 +913,8 @@ final class BackupEngine {
         let destURL = URL(fileURLWithPath: backupRoot)
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
-        // Build relative path sets
-        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0) })
+        // Build relative path sets (sanitize source paths to match destination filesystem names)
+        let sourceRelative = Set(sourceFiles.map { relativePath(from: sourceURL, to: $0).sanitizedForExternalVolume() })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
 
         // Find files to copy (new or modified), with sync verification
@@ -933,7 +935,7 @@ final class BackupEngine {
                 continue
             }
 
-            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath)
+            let destFilePath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
 
             if !fm.fileExists(atPath: destFilePath) {
                 filesToCopy.append((fileURL, relPath))
@@ -977,7 +979,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                 try await copyFileWithRetry(from: sourceURL.path, to: destPath, keepVersions: keepVersions, backupRoot: backupRoot)
                 filesUpdated += 1
             } catch {
@@ -1003,7 +1005,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                 try handleDeletion(
                     atPath: destPath,
                     relativePath: relPath,
@@ -1275,7 +1277,7 @@ final class BackupEngine {
 
             // Create all directories at destination
             for dirPath in mergedDirs {
-                let destDirPath = (backupRoot as NSString).appendingPathComponent(dirPath)
+                let destDirPath = (backupRoot as NSString).appendingPathComponent(dirPath.sanitizedForExternalVolume())
                 if !foldersAlreadyCreated.contains(destDirPath) {
                     try? fm.createDirectory(atPath: destDirPath, withIntermediateDirectories: true, attributes: nil)
                     foldersAlreadyCreated.insert(destDirPath)
@@ -1285,17 +1287,18 @@ final class BackupEngine {
 
             // Process all merged files — determine which need backup
             for fileInfo in mergedFiles {
-                let destFilePath = (backupRoot as NSString).appendingPathComponent(fileInfo.relPath)
+                let sanitizedRelPath = fileInfo.relPath.sanitizedForExternalVolume()
+                let destFilePath = (backupRoot as NSString).appendingPathComponent(sanitizedRelPath)
                 let fileURL = sourceURL.appendingPathComponent(fileInfo.relPath)
 
                 let needsBackup: Bool
-                if let existingSize = destFileSizes[fileInfo.relPath] {
+                if let existingSize = destFileSizes[sanitizedRelPath] {
                     if fileInfo.isCloudOnly {
                         needsBackup = existingSize == 0
                     } else if fileInfo.size != existingSize {
                         needsBackup = true
                     } else if let cachedModTime = fileInfo.modTime,
-                              let destMtime = destModTimes[fileInfo.relPath],
+                              let destMtime = destModTimes[sanitizedRelPath],
                               cachedModTime.timeIntervalSince1970 > destMtime + 1.0 {
                         needsBackup = true  // Same size but source is newer
                     } else {
@@ -1426,7 +1429,16 @@ final class BackupEngine {
                                 continue
                             }
 
-                            if let items = scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot) {
+                            // Run synchronous directory scan on a non-cooperative thread
+                            // to avoid blocking the Swift concurrency thread pool if the
+                            // file provider (Proton Drive / iCloud) stalls on I/O
+                            let items = await withCheckedContinuation { continuation in
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    let result = self.scanDirectoryContents(directory: directory, sourceURL: sourceURL, backupRoot: backupRoot)
+                                    continuation.resume(returning: result)
+                                }
+                            }
+                            if let items {
                                 var subdirs: [URL] = []
                                 for item in items {
                                     if item.isDir {
@@ -1535,6 +1547,7 @@ final class BackupEngine {
                     var lastDirs = 0
                     var lastFound = 0
                     var lastCopied = 0
+                    var unchangedCycles = 0
                     while true {
                         try? await Task.sleep(nanoseconds: 500_000_000) // Update every 500ms
 
@@ -1549,13 +1562,21 @@ final class BackupEngine {
                         let elapsed = Date().timeIntervalSince(scanStartTime)
                         let scanRate = elapsed > 0 ? Double(snapshot.dirsScanned) / elapsed : 0
 
-                        // Only log when values actually change
+                        // Log when values change, or emit heartbeat every 10s if scan appears stuck
                         if snapshot.dirsScanned != lastDirs || snapshot.filesFound != lastFound || copied != lastCopied {
                             logService.log(.debug, category: .backup,
                                            message: "[Phase0] Scan+Copy: \(snapshot.dirsScanned) dirs (\(String(format: "%.0f", scanRate))/s), \(snapshot.filesFound) found, \(copied)/\(queued) copied")
                             lastDirs = snapshot.dirsScanned
                             lastFound = snapshot.filesFound
                             lastCopied = copied
+                            unchangedCycles = 0
+                        } else {
+                            unchangedCycles += 1
+                            if unchangedCycles % 20 == 0 { // Every ~10s of no change
+                                let queueSize = await dirQueue.getQueueSize()
+                                logService.log(.debug, category: .backup,
+                                               message: "[Phase0] Heartbeat: \(snapshot.dirsScanned) dirs, \(snapshot.filesFound) found, \(copied)/\(queued) copied, dirQueue=\(queueSize) scanRunning=\(scanRunning)")
+                            }
                         }
 
                         // Report the current file being copied (or scanning status if no file yet)
@@ -1611,7 +1632,8 @@ final class BackupEngine {
                        message: "[Phase0] Remaining for Phase1: \(cloudOnlyFilesToBackup.count) cloud-only files")
 
         // Calculate files to delete — all source files (cached or scanned) vs destination
-        let sourceRelative = Set(cachedFileInfos.map { $0.relPath })
+        // Sanitize source paths to match destination keys (which use sanitized names on disk)
+        let sourceRelative = Set(cachedFileInfos.map { $0.relPath.sanitizedForExternalVolume() })
         let destRelative = Set(destFileSizes.keys)
         let filesToDelete = destRelative.subtracting(sourceRelative)
 
@@ -1685,7 +1707,7 @@ final class BackupEngine {
                         badgeService.markFileDownloading(relativePath: relPath)
 
                         do {
-                            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                            let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
 
                             // Re-check file status before downloading (status may have changed since scan)
                             var p1StatInfo = stat()
@@ -1847,7 +1869,7 @@ final class BackupEngine {
                 progressHandler(currentProgress)
 
                 do {
-                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                    let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                     try handleDeletion(
                         atPath: destPath,
                         relativePath: relPath,
@@ -1887,21 +1909,23 @@ final class BackupEngine {
         var updatedDestModTimes = destModTimes
         // Update local files that were copied during scan
         for fileInfo in cachedFileInfos where !fileInfo.isCloudOnly {
-            if updatedDestSizes[fileInfo.relPath] != fileInfo.size {
-                updatedDestSizes[fileInfo.relPath] = fileInfo.size
+            let sanitizedRelPath = fileInfo.relPath.sanitizedForExternalVolume()
+            if updatedDestSizes[sanitizedRelPath] != fileInfo.size {
+                updatedDestSizes[sanitizedRelPath] = fileInfo.size
             }
             // After copy, dest modTime matches source modTime (copyItem preserves it)
             if let modTime = fileInfo.modTime {
-                updatedDestModTimes[fileInfo.relPath] = modTime.timeIntervalSince1970
+                updatedDestModTimes[sanitizedRelPath] = modTime.timeIntervalSince1970
             }
         }
         // Update cloud files that were downloaded
         for (_, relPath, _) in cloudOnlyFilesToBackup {
-            let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+            let sanitizedRelPath = relPath.sanitizedForExternalVolume()
+            let destPath = (backupRoot as NSString).appendingPathComponent(sanitizedRelPath)
             var statInfo = stat()
             if stat(destPath, &statInfo) == 0 {
-                updatedDestSizes[relPath] = Int64(statInfo.st_size)
-                updatedDestModTimes[relPath] = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
+                updatedDestSizes[sanitizedRelPath] = Int64(statInfo.st_size)
+                updatedDestModTimes[sanitizedRelPath] = TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000
             }
         }
         // Remove deleted files
@@ -2065,14 +2089,14 @@ final class BackupEngine {
         let destURL = URL(fileURLWithPath: backupRoot)
         let destFiles = try scanDirectory(destURL, excludingPrefix: "_versions")
 
-        // Build relative path sets
-        let cloudRelative = Set(cloudFilesOnly.map { $0.path })
+        // Build relative path sets (sanitize cloud paths to match destination filesystem names)
+        let cloudRelative = Set(cloudFilesOnly.map { $0.path.sanitizedForExternalVolume() })
         let destRelative = Set(destFiles.map { relativePath(from: destURL, to: $0) })
 
         // Find files to copy (new or modified)
         var filesToProcess: [(cloudFile: RcloneFile, needsUpdate: Bool)] = []
         for cloudFile in cloudFilesOnly {
-            let destFilePath = (backupRoot as NSString).appendingPathComponent(cloudFile.path)
+            let destFilePath = (backupRoot as NSString).appendingPathComponent(cloudFile.path.sanitizedForExternalVolume())
 
             if !fm.fileExists(atPath: destFilePath) {
                 filesToProcess.append((cloudFile, true))
@@ -2116,7 +2140,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(cloudFile.path)
+                let destPath = (backupRoot as NSString).appendingPathComponent(cloudFile.path.sanitizedForExternalVolume())
 
                 // Check if file exists locally (in Proton Drive app folder)
                 var copiedFromLocal = false
@@ -2168,7 +2192,7 @@ final class BackupEngine {
             progressHandler(currentProgress)
 
             do {
-                let destPath = (backupRoot as NSString).appendingPathComponent(relPath)
+                let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
                 try handleDeletion(
                     atPath: destPath,
                     relativePath: relPath,

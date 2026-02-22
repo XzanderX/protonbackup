@@ -490,9 +490,10 @@ final class AppState: ObservableObject {
         driveMonitor.onDestinationConnected = { [weak self] volumeInfo in
             Task { @MainActor in
                 guard let self else { return }
+                let wasDisconnected = !self.isDestinationConnected
                 self.checkDestinationAvailability()
 
-                if self.isDestinationConnected {
+                if self.isDestinationConnected && wasDisconnected {
                     self.logService.log(.info, category: .driveMonitor,
                                         message: "Backup destination connected: \(volumeInfo.name)")
 

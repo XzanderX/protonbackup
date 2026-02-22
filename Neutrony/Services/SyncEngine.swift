@@ -199,14 +199,14 @@ final class SyncEngine {
 
     private func applyFolderAdd(file: ProtonFile, mirrorPath: String) throws {
         guard let relativePath = file.relativePath else { return }
-        let fullPath = (mirrorPath as NSString).appendingPathComponent(relativePath)
+        let fullPath = (mirrorPath as NSString).appendingPathComponent(relativePath.sanitizedForExternalVolume())
         try FileManager.default.createDirectory(atPath: fullPath, withIntermediateDirectories: true)
         logService.log(.debug, category: .sync, message: "Created folder", filePath: relativePath)
     }
 
     private func applyFileSync(file: ProtonFile, shareID: String, mirrorPath: String) async throws {
         guard let relativePath = file.relativePath else { return }
-        let fullPath = (mirrorPath as NSString).appendingPathComponent(relativePath)
+        let fullPath = (mirrorPath as NSString).appendingPathComponent(relativePath.sanitizedForExternalVolume())
 
         // Ensure parent directory exists
         let parentPath = (fullPath as NSString).deletingLastPathComponent
@@ -228,7 +228,8 @@ final class SyncEngine {
     }
 
     private func applyDeletion(relativePath: String, mirrorPath: String, policy: DeletionPolicy) throws {
-        let fullPath = (mirrorPath as NSString).appendingPathComponent(relativePath)
+        let sanitizedRelPath = relativePath.sanitizedForExternalVolume()
+        let fullPath = (mirrorPath as NSString).appendingPathComponent(sanitizedRelPath)
         let fm = FileManager.default
 
         guard fm.fileExists(atPath: fullPath) else { return }
@@ -244,7 +245,7 @@ final class SyncEngine {
             let dateString = ISO8601DateFormatter().string(from: Date()).prefix(10)
             let versionPath = (versionDir as NSString)
                 .appendingPathComponent(String(dateString))
-            let destPath = (versionPath as NSString).appendingPathComponent(relativePath)
+            let destPath = (versionPath as NSString).appendingPathComponent(sanitizedRelPath)
 
             let destParent = (destPath as NSString).deletingLastPathComponent
             try fm.createDirectory(atPath: destParent, withIntermediateDirectories: true)

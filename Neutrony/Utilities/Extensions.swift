@@ -53,6 +53,37 @@ extension Color {
     static let statusRed = Color(red: 0.94, green: 0.27, blue: 0.27)
 }
 
+// MARK: - String Path Sanitization
+
+extension String {
+    /// Replace characters that are invalid on common backup-destination filesystems (exFAT, FAT32, NTFS).
+    /// Applied to destination paths only — source paths must remain unsanitized to match the original files.
+    func sanitizedForExternalVolume() -> String {
+        // Characters forbidden on exFAT/FAT32/NTFS: " * : < > ? \ |
+        // Forward slash is a path separator so we must not touch it.
+        let table: [Character: Character] = [
+            "\"": "'",
+            "*": "_",
+            "<": "(",
+            ">": ")",
+            "?": "_",
+            "\\": "-",
+            "|": "-",
+            ":": "-",
+        ]
+        var result = ""
+        result.reserveCapacity(count)
+        for ch in self {
+            if let replacement = table[ch] {
+                result.append(replacement)
+            } else {
+                result.append(ch)
+            }
+        }
+        return result
+    }
+}
+
 // MARK: - Int64 Extensions
 
 extension Int64 {
