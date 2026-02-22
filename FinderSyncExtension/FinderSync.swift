@@ -143,22 +143,22 @@ class FinderSync: FIFinderSync {
     // MARK: - Notification Handling
 
     @objc private func handleBadgeUpdate(_ notification: Notification) {
-        // Reload state
+        // Reload state from disk
         badgeManager.loadState()
 
         // Update monitored directories if changed
         updateMonitoredDirectories()
 
-        // If a specific path was updated, refresh just that item
-        if let path = notification.userInfo?["path"] as? String {
-            let url = URL(fileURLWithPath: path)
-            FIFinderSyncController.default().setBadgeIdentifier(
-                badgeManager.badge(for: path).rawValue,
-                for: url
-            )
+        // Re-apply badges for all known files so Finder picks up changes
+        let allStates = badgeManager.badgeStates
+        let controller = FIFinderSyncController.default()
+        for (path, state) in allStates {
+            if state.badge != .none {
+                controller.setBadgeIdentifier(state.badge.rawValue, for: URL(fileURLWithPath: path))
+            }
         }
 
-        NSLog("FinderSync: Badge update received")
+        NSLog("FinderSync: Badge update received, refreshed \(allStates.count) badges")
     }
 
     // MARK: - FIFinderSync Protocol
@@ -173,10 +173,8 @@ class FinderSync: FIFinderSync {
 
     override func requestBadgeIdentifier(for url: URL) {
         let badge = badgeManager.badge(for: url.path)
-
-        if badge != .none {
-            FIFinderSyncController.default().setBadgeIdentifier(badge.rawValue, for: url)
-        }
+        // Always set the identifier — passing "" clears any stale badge
+        FIFinderSyncController.default().setBadgeIdentifier(badge.rawValue, for: url)
     }
 
     // MARK: - Toolbar Item (optional)

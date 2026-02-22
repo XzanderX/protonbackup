@@ -1057,6 +1057,7 @@ final class BackupEngine {
         keepVersions: Bool,
         offloadAfterBackup: Bool = false,
         pauseChecker: (() -> Bool)? = nil,
+        cancelChecker: (() -> Bool)? = nil,
         progressHandler: @escaping (BackupProgress) -> Void
     ) async throws -> BackupSummary {
         let startTime = Date()
@@ -1309,16 +1310,9 @@ final class BackupEngine {
                 }
 
                 if needsBackup {
-                    if !fm.fileExists(atPath: destFilePath) {
-                        let destParent = (destFilePath as NSString).deletingLastPathComponent
-                        if !foldersAlreadyCreated.contains(destParent) {
-                            try? fm.createDirectory(atPath: destParent, withIntermediateDirectories: true)
-                            foldersAlreadyCreated.insert(destParent)
-                        }
-                        fm.createFile(atPath: destFilePath, contents: nil, attributes: nil)
-                        placeholdersCreated += 1
-                    }
-
+                    // Don't create 0-byte placeholders — copyFile() handles directory
+                    // creation and writes atomically via temp+rename. Placeholders from
+                    // failed backups leave stale empty files on the destination.
                     if fileInfo.isCloudOnly {
                         cloudOnlyFilesToBackup.append((fileURL, fileInfo.relPath, nil))
                     } else {
@@ -1681,6 +1675,12 @@ final class BackupEngine {
                 var inFlight = 0
 
                 for (fileURL, relPath, _) in cloudOnlyFilesToBackup {
+                    // Check for cancellation (sleep, user cancel) before launching new downloads
+                    if cancelChecker?() == true {
+                        logService.log(.info, category: .backup, message: "[Phase1] Cancelled, stopping downloads")
+                        break
+                    }
+
                     // Check for pause before launching new downloads
                     while pauseChecker?() == true {
                         try? await Task.sleep(nanoseconds: 500_000_000)
@@ -1695,11 +1695,18 @@ final class BackupEngine {
                     inFlight += 1
                     group.addTask { [self] in
                         let completed = await phase1.getCompleted()
+                        // Re-check file status before downloading (status may have changed since scan)
+                        var p1StatInfo = stat()
+                        let p1StatResult = stat(fileURL.path, &p1StatInfo)
+                        let currentSize: Int64 = (p1StatResult == 0) ? Int64(p1StatInfo.st_size) : 0
+                        let currentBlocks = (p1StatResult == 0) ? p1StatInfo.st_blocks : 0
+
                         let currentProgress = BackupProgress(
                             totalFiles: totalAllFiles,
                             completedFiles: baseCompleted + completed,
                             currentFileName: "⬇ \(relPath)",
-                            currentFileProgress: 0.0
+                            currentFileProgress: 0.0,
+                            currentFileSize: currentSize
                         )
                         progressHandler(currentProgress)
 
@@ -1709,11 +1716,6 @@ final class BackupEngine {
                         do {
                             let destPath = (backupRoot as NSString).appendingPathComponent(relPath.sanitizedForExternalVolume())
 
-                            // Re-check file status before downloading (status may have changed since scan)
-                            var p1StatInfo = stat()
-                            let p1StatResult = stat(fileURL.path, &p1StatInfo)
-                            let currentSize: Int64 = (p1StatResult == 0) ? Int64(p1StatInfo.st_size) : 0
-                            let currentBlocks = (p1StatResult == 0) ? p1StatInfo.st_blocks : 0
                             let needsDownload = (currentSize == 0 || currentBlocks == 0)
 
                             logService.log(.info, category: .backup,
@@ -1723,12 +1725,13 @@ final class BackupEngine {
 
                             if needsDownload {
                                 logService.log(.info, category: .backup, message: "[Phase1] DOWNLOADING: \(relPath)")
-                                let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120) { dlProgress in
+                                let downloaded = await syncVerifier.requestDownloadAndWait(at: fileURL.path, timeout: 120, cancelChecker: cancelChecker) { dlProgress in
                                     let dlUpdate = BackupProgress(
                                         totalFiles: totalAllFiles,
                                         completedFiles: baseCompleted + completed,
                                         currentFileName: "⬇ \(relPath)",
-                                        currentFileProgress: dlProgress
+                                        currentFileProgress: dlProgress,
+                                        currentFileSize: currentSize
                                     )
                                     progressHandler(dlUpdate)
                                 }
@@ -2436,6 +2439,7 @@ final class BackupEngine {
     }
 
     /// Copy a file, optionally versioning the existing file at the destination.
+    /// Uses atomic copy-then-rename to prevent data loss if interrupted.
     private func copyFile(from source: String, to destination: String, keepVersions: Bool, backupRoot: String) throws {
         let fm = FileManager.default
 
@@ -2449,11 +2453,34 @@ final class BackupEngine {
             try versionManager.archiveFile(atPath: destination, relativePath: relPath, backupRoot: backupRoot)
         }
 
-        // Remove existing and copy new
-        if fm.fileExists(atPath: destination) {
-            try fm.removeItem(atPath: destination)
+        // Atomic copy: write to temp file first, then rename to replace destination.
+        // POSIX rename() on the same filesystem is atomic — either the old file is
+        // fully replaced or nothing happens. This prevents data loss if the app crashes,
+        // the system sleeps, or the drive is ejected mid-copy.
+        let tempName = ".neutrony-tmp-\(UUID().uuidString)"
+        let tempPath = (parent as NSString).appendingPathComponent(tempName)
+
+        // Clean up temp file on any exit path (success or failure)
+        defer { try? fm.removeItem(atPath: tempPath) }
+
+        // Copy source to temp file
+        if fm.fileExists(atPath: tempPath) {
+            try fm.removeItem(atPath: tempPath)
         }
-        try fm.copyItem(atPath: source, toPath: destination)
+        try fm.copyItem(atPath: source, toPath: tempPath)
+
+        // Atomically replace destination with temp file
+        if fm.fileExists(atPath: destination) {
+            // rename() atomically replaces the target on the same filesystem
+            let result = Darwin.rename(tempPath, destination)
+            if result != 0 {
+                // Fallback for filesystems that don't support atomic rename across entries
+                try fm.removeItem(atPath: destination)
+                try fm.moveItem(atPath: tempPath, toPath: destination)
+            }
+        } else {
+            try fm.moveItem(atPath: tempPath, toPath: destination)
+        }
 
         logService.log(.debug, category: .backup, message: "Copied", filePath: (destination as NSString).lastPathComponent)
     }
@@ -2580,7 +2607,7 @@ final class BackupEngine {
         throw lastError ?? BackupEngineError.maxRetriesExceeded
     }
 
-    /// Verify that a file was copied correctly by comparing sizes.
+    /// Verify that a file was copied correctly by comparing size and modification time.
     private func verifyFileCopy(source: String, destination: String) -> Bool {
         let fm = FileManager.default
 
@@ -2592,7 +2619,24 @@ final class BackupEngine {
         let sourceSize = sourceAttrs[.size] as? Int64 ?? -1
         let destSize = destAttrs[.size] as? Int64 ?? -2
 
-        return sourceSize == destSize && sourceSize >= 0
+        guard sourceSize == destSize && sourceSize >= 0 else {
+            return false
+        }
+
+        // Also verify modification time was preserved (copyItem preserves it).
+        // A mismatch indicates the copy was interrupted or corrupted.
+        // 2-second tolerance for FAT32/exFAT timestamp resolution.
+        if let sourceMod = sourceAttrs[.modificationDate] as? Date,
+           let destMod = destAttrs[.modificationDate] as? Date {
+            let timeDiff = abs(sourceMod.timeIntervalSince(destMod))
+            if timeDiff > 2.0 {
+                logService.log(.warning, category: .backup,
+                               message: "Verify: modTime mismatch (\(String(format: "%.1f", timeDiff))s) for \((destination as NSString).lastPathComponent)")
+                return false
+            }
+        }
+
+        return true
     }
 
     /// Check if an error should not be retried.

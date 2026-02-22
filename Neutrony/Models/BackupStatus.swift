@@ -93,6 +93,7 @@ struct BackupProgress: Equatable {
     var completedFiles: Int
     var currentFileName: String?
     var currentFileProgress: Double?  // Per-file progress 0.0-1.0 (e.g. download bytes)
+    var currentFileSize: Int64?       // File size from BackupEngine (avoids stat() in UI layer)
 
     var fraction: Double {
         guard totalFiles > 0 else { return 0 }

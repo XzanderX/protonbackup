@@ -39,31 +39,37 @@ final class BadgeService {
     // MARK: - Backup Lifecycle
 
     /// Called when a backup starts.
+    /// Clears transient badges (syncing/downloading/pending/error) but preserves
+    /// complete badges so files keep their green checkmark between runs.
     func backupStarted(destinationPath: String) {
         activeDestination = destinationPath
 
-        // Clear any stale badges from previous interrupted backups
-        badgeManager.clearAllBadges()
+        // Only clear transient badges — keep complete badges from previous runs
+        let states = badgeManager.badgeStates
+        for (path, state) in states {
+            if state.badge != .complete {
+                badgeManager.clearBadge(for: path)
+            }
+        }
 
-        // Don't set a badge on the root folder - it would propagate to all children
-        // Individual files will get badges as they're processed
-        logService.log(.debug, category: .backup, message: "Badge: backup started")
+        logService.log(.debug, category: .backup, message: "Badge: backup started, preserved \(states.filter { $0.value.badge == .complete }.count) complete badges")
     }
 
     /// Called when backup completes successfully.
+    /// Promotes all in-progress badges to complete so files keep their green checkmark.
     func backupCompleted(destinationPath: String) {
-        // Clear all syncing/downloading badges
-        badgeManager.clearAllBadges()
-
-        // Set complete badge on destination root briefly
-        badgeManager.setBadge(.complete, for: destinationPath)
-
-        // Clear the complete badge after 5 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            self?.badgeManager.clearBadge(for: destinationPath)
+        // Promote any remaining syncing/downloading badges to complete
+        let states = badgeManager.badgeStates
+        for (path, state) in states {
+            if state.badge == .syncing || state.badge == .downloading || state.badge == .pending {
+                badgeManager.setBadge(.complete, for: path)
+            }
         }
 
-        logService.log(.debug, category: .backup, message: "Badge: backup completed")
+        // Also mark the destination root as complete
+        badgeManager.setBadge(.complete, for: destinationPath)
+
+        logService.log(.debug, category: .backup, message: "Badge: backup completed, \(states.count) files marked complete")
     }
 
     /// Called when backup fails.

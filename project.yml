@@ -30,8 +30,19 @@ targets:
           - "@executable_path/../Frameworks"
     info:
       path: Neutrony/Info.plist
+      properties:
+        LSUIElement: true
+        NSHumanReadableCopyright: "Copyright © 2025 Neutrony. All rights reserved."
+        CFBundleDisplayName: Neutrony
+        CFBundleIconName: AppIcon
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
     entitlements:
       path: Neutrony/Neutrony.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.neutrony.shared
     dependencies:
       - target: FinderSyncExtension
         embed: true

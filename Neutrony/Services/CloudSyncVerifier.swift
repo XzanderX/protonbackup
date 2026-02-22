@@ -190,7 +190,7 @@ final class CloudSyncVerifier {
     /// Request download and wait for completion.
     /// Returns true if file was successfully downloaded within timeout.
     /// Optional progressHandler reports per-file download progress (0.0-1.0) via st_blocks/st_size.
-    func requestDownloadAndWait(at path: String, timeout: TimeInterval = 120, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
+    func requestDownloadAndWait(at path: String, timeout: TimeInterval = 120, cancelChecker: (() -> Bool)? = nil, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
         // If already synced, no need to download
         if isFileSynced(at: path) {
             progressHandler?(1.0)
@@ -209,17 +209,24 @@ final class CloudSyncVerifier {
         }
 
         // Wait for completion with progress reporting
-        return await waitForSync(at: path, timeout: timeout, expectedSize: expectedSize, progressHandler: progressHandler)
+        return await waitForSync(at: path, timeout: timeout, expectedSize: expectedSize, cancelChecker: cancelChecker, progressHandler: progressHandler)
     }
 
     /// Wait for a file to be fully synced (with timeout).
     /// Reports download progress combining time-based estimation with st_blocks.
     /// Proton Drive writes files atomically (st_blocks jumps from 0 to final), so
     /// time-based estimation provides smooth intermediate progress for the UI.
-    func waitForSync(at path: String, timeout: TimeInterval = 60, expectedSize: Int64 = 0, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
+    func waitForSync(at path: String, timeout: TimeInterval = 60, expectedSize: Int64 = 0, cancelChecker: (() -> Bool)? = nil, progressHandler: ((Double) -> Void)? = nil) async -> Bool {
         let startTime = Date()
 
         while Date().timeIntervalSince(startTime) < timeout {
+            // Check for cancellation (e.g., system going to sleep, user cancelled)
+            if cancelChecker?() == true {
+                logService.log(.info, category: .sync,
+                               message: "Download cancelled: \((path as NSString).lastPathComponent)")
+                return false
+            }
+
             if isFileSynced(at: path) {
                 progressHandler?(1.0)
                 return true

@@ -24,7 +24,7 @@ public struct FileBadgeState: Codable, Equatable {
 }
 
 /// Shared state container for badge information.
-/// Uses file-based communication via App Groups container.
+/// Uses file-based communication via ~/Library/Application Support/Neutrony/.
 public final class BadgeStateManager {
 
     public static let shared = BadgeStateManager()
@@ -51,26 +51,33 @@ public final class BadgeStateManager {
     /// Work item for debounced save
     private var saveWorkItem: DispatchWorkItem?
 
-    /// The shared container URL for the App Group
-    private var containerURL: URL? {
-        fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)
-    }
+    /// Shared directory accessible by both main app and FinderSync extension.
+    /// Prefers App Group container (works for both sandboxed extension and non-sandboxed app).
+    /// Falls back to ~/Library/Group Containers/ directly if the API fails.
+    private lazy var containerURL: URL = {
+        // Try App Group container first — works for sandboxed extension and non-sandboxed main app
+        if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) {
+            return groupURL
+        }
+        // Fallback: access the Group Containers directory directly
+        // This path is the same location macOS uses for App Groups
+        let home = fileManager.homeDirectoryForCurrentUser
+        return home.appendingPathComponent("Library/Group Containers/\(Self.appGroupIdentifier)", isDirectory: true)
+    }()
 
     /// Path to the badge state file
-    private var stateFileURL: URL? {
-        containerURL?.appendingPathComponent("badge_state.json")
+    private var stateFileURL: URL {
+        containerURL.appendingPathComponent("badge_state.json")
     }
 
     /// Path to the monitored directories file
-    private var monitoredDirsURL: URL? {
-        containerURL?.appendingPathComponent("monitored_directories.json")
+    private var monitoredDirsURL: URL {
+        containerURL.appendingPathComponent("monitored_directories.json")
     }
 
     private init() {
         // Ensure container directory exists
-        if let url = containerURL {
-            try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
-        }
+        try? fileManager.createDirectory(at: containerURL, withIntermediateDirectories: true)
     }
 
     // MARK: - Badge State
@@ -139,8 +146,7 @@ public final class BadgeStateManager {
 
     /// Load state from disk
     public func loadState() {
-        guard let url = stateFileURL,
-              let data = try? Data(contentsOf: url),
+        guard let data = try? Data(contentsOf: stateFileURL),
               let states = try? decoder.decode([String: FileBadgeState].self, from: data) else {
             return
         }
@@ -173,12 +179,11 @@ public final class BadgeStateManager {
 
     /// Immediately save state to disk
     private func saveStateNow() {
-        guard let url = stateFileURL else { return }
         lock.lock()
         let statesToSave = _badgeStates
         lock.unlock()
         guard let data = try? encoder.encode(statesToSave) else { return }
-        try? data.write(to: url, options: .atomic)
+        try? data.write(to: stateFileURL, options: .atomic)
     }
 
     /// Flush any pending saves immediately (call before app termination)
@@ -192,18 +197,16 @@ public final class BadgeStateManager {
 
     /// Set directories to monitor
     public func setMonitoredDirectories(_ directories: [URL]) {
-        guard let url = monitoredDirsURL else { return }
         let paths = directories.map { $0.path }
         if let data = try? encoder.encode(paths) {
-            try? data.write(to: url, options: .atomic)
+            try? data.write(to: monitoredDirsURL, options: .atomic)
         }
         postNotification()
     }
 
     /// Get monitored directories
     public func getMonitoredDirectories() -> [URL] {
-        guard let url = monitoredDirsURL,
-              let data = try? Data(contentsOf: url),
+        guard let data = try? Data(contentsOf: monitoredDirsURL),
               let paths = try? decoder.decode([String].self, from: data) else {
             return []
         }
@@ -214,14 +217,13 @@ public final class BadgeStateManager {
 
     private func postNotification() {
         // Post distributed notification for cross-process communication
-        // Batched - doesn't include specific path since multiple may have changed
         DispatchQueue.main.async {
             let center = DistributedNotificationCenter.default()
             center.postNotificationName(
                 NSNotification.Name(Self.badgeUpdateNotification),
                 object: nil,
                 userInfo: nil,
-                deliverImmediately: false  // Allow coalescing
+                deliverImmediately: true
             )
         }
     }

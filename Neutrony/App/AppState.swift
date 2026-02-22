@@ -122,6 +122,11 @@ final class AppState: ObservableObject {
         // Check destination availability
         checkDestinationAvailability()
 
+        // Configure FinderSync badges for the backup destination
+        if let dest = destinationPath {
+            BadgeService.shared.configure(sourcePath: config.sourcePath, destinationPath: dest)
+        }
+
         // Start drive monitoring
         driveMonitor.startMonitoring()
 
@@ -357,6 +362,9 @@ final class AppState: ObservableObject {
                         offloadAfterBackup: config.offloadAfterBackup,
                         pauseChecker: { [weak self] in
                             (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                        },
+                        cancelChecker: { [weak self] in
+                            self?.syncState.shouldCancel ?? false
                         }
                     ) { [weak self, sourcePath] progress in
                         Task { @MainActor in
@@ -598,14 +606,19 @@ final class AppState: ObservableObject {
         logService.log(.info, category: .app, message: "System woke from sleep, checking destination...")
 
         // Brief delay to let drives remount
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.checkDestinationAvailability()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self = self else { return }
+            self.checkDestinationAvailability()
 
-            // If drive is connected and we have a pending backup, start it
-            if let self = self,
-               self.isDestinationConnected,
-               self.syncState.pendingBackup,
-               !self.syncState.isLocked {
+            guard self.isDestinationConnected && self.config.setupCompleted else { return }
+
+            if self.syncState.isLocked {
+                // Backup was running when we went to sleep — it's likely stalled.
+                // Reset the lock and restart.
+                self.logService.log(.info, category: .app, message: "Backup was active before sleep, restarting...")
+                self.syncState.resetAfterBackup()
+                self.runNow()
+            } else if self.syncState.pendingBackup {
                 self.logService.log(.info, category: .app, message: "Resuming pending backup after wake...")
                 self.runNow()
             }
@@ -615,7 +628,13 @@ final class AppState: ObservableObject {
     /// Handle system going to sleep.
     private func handleGoingToSleep() {
         logService.log(.info, category: .app, message: "System going to sleep...")
-        // Optionally pause or mark backup for resume
+
+        // Cancel the running backup so it can be cleanly restarted on wake.
+        // Network connections and disk I/O will be interrupted by sleep anyway.
+        if syncState.isLocked {
+            logService.log(.info, category: .app, message: "Cancelling active backup before sleep")
+            syncState.cancel()
+        }
     }
 
     /// Handle volume mounted event.
@@ -829,14 +848,8 @@ final class AppState: ObservableObject {
             }
         } else {
             // New file — add activity
-            var fileSize: Int64? = nil
-            if let source = sourcePath {
-                let sourceFilePath = (source as NSString).appendingPathComponent(cleanFileName)
-                if let attrs = try? FileManager.default.attributesOfItem(atPath: sourceFilePath),
-                   let size = attrs[.size] as? Int64 {
-                    fileSize = size
-                }
-            }
+            // Use file size from BackupEngine progress (avoids stat() syscall on main thread)
+            let fileSize = progress.currentFileSize
 
             addFileActivity(FileActivity(
                 fileName: fileName,
