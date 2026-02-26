@@ -103,12 +103,14 @@ final class FileWatcher {
         logService.log(.debug, category: .fileWatcher,
                        message: "\(relevantPaths.count) file changes detected, debouncing…")
 
-        // Debounce: reset timer on each change
+        // Debounce: reset timer on each change (timer must be on main thread)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.debounceTimer?.invalidate()
+            self.debounceTimer = nil
             self.debounceTimer = Timer.scheduledTimer(withTimeInterval: self.debounceInterval, repeats: false) { [weak self] _ in
                 guard let self else { return }
+                self.debounceTimer = nil
                 self.logService.log(.info, category: .fileWatcher,
                                     message: "Debounce complete, triggering backup check")
                 self.onChangesDetected?()

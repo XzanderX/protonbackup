@@ -125,7 +125,7 @@ struct BackupConfiguration: Codable, Equatable {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? FileManager.default.temporaryDirectory
         return appSupport
             .appendingPathComponent("Neutrony", isDirectory: true)
             .appendingPathComponent("Mirror", isDirectory: true)
@@ -138,7 +138,7 @@ struct BackupConfiguration: Codable, Equatable {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? FileManager.default.temporaryDirectory
         let dir = appSupport.appendingPathComponent("Neutrony", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("config.json")

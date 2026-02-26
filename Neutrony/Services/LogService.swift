@@ -175,7 +175,7 @@ final class LogService: ObservableObject {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
+        ).first ?? FileManager.default.temporaryDirectory
         let dir = appSupport
             .appendingPathComponent("Neutrony", isDirectory: true)
             .appendingPathComponent("Logs", isDirectory: true)
@@ -207,6 +207,10 @@ final class LogService: ObservableObject {
     }
 
     private func rotateLogFile() {
+        // Close the current handle before moving the file
+        logFileHandle?.closeFile()
+        logFileHandle = nil
+
         let url = Self.logFileURL
         let archiveURL = Self.logDirectory.appendingPathComponent("neutrony.log.1")
         let fm = FileManager.default

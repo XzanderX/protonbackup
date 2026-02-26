@@ -29,12 +29,12 @@ final class AppState: ObservableObject {
     let driveClient = ProtonDriveClient.shared
     let loginItemService = LoginItemService.shared
 
-    private(set) var syncEngine: SyncEngine!
-    private(set) var backupEngine: BackupEngine!
-    private(set) var driveMonitor: DriveMonitor!
-    private(set) var fileWatcher: FileWatcher!
-    private(set) var versionManager: VersionManager!
-    private(set) var snapshotManager: SnapshotManager!
+    private(set) var syncEngine: SyncEngine
+    private(set) var backupEngine: BackupEngine
+    private(set) var driveMonitor: DriveMonitor
+    private(set) var fileWatcher: FileWatcher
+    private(set) var versionManager: VersionManager
+    private(set) var snapshotManager: SnapshotManager
 
     /// Timer for periodic remote change polling.
     private var pollingTimer: Timer?
@@ -58,6 +58,20 @@ final class AppState: ObservableObject {
     /// without actually being disconnected. We wait before reacting.
     private var disconnectGraceWork: DispatchWorkItem?
     private let disconnectGraceSeconds: Double = 5.0
+
+    // MARK: - Lifecycle
+
+    deinit {
+        pollingTimer?.invalidate()
+        destinationCheckTimer?.invalidate()
+        disconnectGraceWork?.cancel()
+
+        let nc = NSWorkspace.shared.notificationCenter
+        if let obs = wakeObserver { nc.removeObserver(obs) }
+        if let obs = sleepObserver { nc.removeObserver(obs) }
+        if let obs = volumeMountObserver { nc.removeObserver(obs) }
+        if let obs = volumeUnmountObserver { nc.removeObserver(obs) }
+    }
 
     // MARK: - Initialization
 
@@ -617,8 +631,8 @@ final class AppState: ObservableObject {
     private func handleWakeFromSleep() {
         logService.log(.info, category: .app, message: "System woke from sleep, checking destination...")
 
-        // Brief delay to let drives remount
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+        // Brief delay to let drives remount (grace period handles transient glitches)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
             self.checkDestinationAvailability()
 
@@ -763,7 +777,7 @@ final class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let bookmark = self.config.destinationBookmark
-                let monitor = self.driveMonitor!
+                let monitor = self.driveMonitor
                 let result = await Task.detached(priority: .utility) {
                     monitor.isDestinationAvailable(bookmark: bookmark)
                 }.value

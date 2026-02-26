@@ -159,7 +159,10 @@ final class ProtonDriveClient {
             throw DriveClientError.notAuthenticated
         }
 
-        var request = URLRequest(url: URL(string: baseURL + path)!)
+        guard let url = URL(string: baseURL + path) else {
+            throw DriveClientError.networkError
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue(uid, forHTTPHeaderField: "x-pm-uid")
