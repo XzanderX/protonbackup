@@ -9,6 +9,7 @@ final class FileWatcher {
     private var stream: FSEventStreamRef?
     private var debounceTimer: Timer?
     private let debounceInterval: TimeInterval = 30 // seconds
+    private let eventQueue = DispatchQueue(label: "com.neutrony.filewatcher", qos: .utility)
 
     /// Called when local changes are detected (after debounce).
     var onChangesDetected: (() -> Void)?
@@ -47,7 +48,7 @@ final class FileWatcher {
         }
 
         self.stream = stream
-        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        FSEventStreamSetDispatchQueue(stream, eventQueue)
         FSEventStreamStart(stream)
 
         logService.log(.info, category: .fileWatcher, message: "Watching \(path) for changes")

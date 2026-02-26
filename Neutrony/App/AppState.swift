@@ -756,9 +756,29 @@ final class AppState: ObservableObject {
     private func startDestinationCheckTimer() {
         destinationCheckTimer?.invalidate()
 
-        // Check every 30 seconds for destination availability
+        // Check every 30 seconds for destination availability.
+        // Do the blocking bookmark resolution off the main thread,
+        // then hop back to update published state.
         destinationCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.checkDestinationAvailability()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let bookmark = self.config.destinationBookmark
+                let monitor = self.driveMonitor!
+                let result = await Task.detached(priority: .utility) {
+                    monitor.isDestinationAvailable(bookmark: bookmark)
+                }.value
+
+                let wasDisconnected = !self.isDestinationConnected
+                self.isDestinationConnected = result.0
+                self.destinationPath = result.1
+
+                if !result.0 && self.config.setupCompleted && !self.syncState.isLocked {
+                    self.backupState = .destinationDisconnected
+                } else if result.0 && wasDisconnected {
+                    self.logService.log(.info, category: .driveMonitor,
+                                       message: "Destination now available at: \(result.1 ?? "unknown")")
+                }
+            }
         }
     }
 
@@ -870,10 +890,10 @@ final class AppState: ObservableObject {
             backupState = .backing(progress: progress)
         }
 
-        // If backup is actively running, the drive must be connected
-        // This fixes stale "Drive not connected" status after wake from sleep
+        // If backup is actively producing progress, the drive must be connected.
+        // Just update the flag without doing blocking I/O on the main thread.
         if !isDestinationConnected && destinationPath != nil {
-            checkDestinationAvailability()
+            isDestinationConnected = true
         }
 
         // Track file activity using destination path
