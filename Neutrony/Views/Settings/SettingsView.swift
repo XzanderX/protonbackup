@@ -351,10 +351,9 @@ struct AccountSettingsView: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
 
+        // Start in CloudStorage (NSOpenPanel handles missing dirs gracefully)
         let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
-        if FileManager.default.fileExists(atPath: cloudStoragePath) {
-            panel.directoryURL = URL(fileURLWithPath: cloudStoragePath)
-        }
+        panel.directoryURL = URL(fileURLWithPath: cloudStoragePath)
 
         if panel.runModal() == .OK, let url = panel.url {
             appState.config.sourcePath = url.path

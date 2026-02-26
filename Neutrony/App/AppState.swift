@@ -492,22 +492,16 @@ final class AppState: ObservableObject {
     }
 
     /// Detect the local Proton Drive app folder if available.
+    /// Re-uses config.sourcePath when it already points to CloudStorage,
+    /// avoiding an extra directory scan that triggers a TCC prompt.
     private func detectLocalProtonDriveFolder() -> String? {
-        let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
-        let fm = FileManager.default
-
-        guard let contents = try? fm.contentsOfDirectory(atPath: cloudStoragePath) else {
-            return nil
-        }
-
-        if let protonFolder = contents.first(where: { $0.hasPrefix("ProtonDrive-") }) {
-            let fullPath = cloudStoragePath + "/" + protonFolder
+        // If the user already configured a CloudStorage source path, use it directly
+        if let src = config.sourcePath, src.contains("/Library/CloudStorage/ProtonDrive-") {
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
-                return fullPath
+            if FileManager.default.fileExists(atPath: src, isDirectory: &isDir), isDir.boolValue {
+                return src
             }
         }
-
         return nil
     }
 

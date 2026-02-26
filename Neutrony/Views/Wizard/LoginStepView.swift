@@ -207,14 +207,14 @@ struct LoginStepView: View {
             let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
             let fileManager = FileManager.default
 
+            // Use a single directory listing — this is the ONLY TCC prompt the app triggers.
+            // It runs only once during initial setup.
             do {
                 let contents = try fileManager.contentsOfDirectory(atPath: cloudStoragePath)
 
-                // Look for ProtonDrive-* folder
                 if let protonFolder = contents.first(where: { $0.hasPrefix("ProtonDrive-") }) {
                     let fullPath = cloudStoragePath + "/" + protonFolder
 
-                    // Verify it's a directory
                     var isDir: ObjCBool = false
                     if fileManager.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
                         wizardState.sourcePath = fullPath
@@ -222,7 +222,6 @@ struct LoginStepView: View {
                         wizardState.useRclone = false
                         wizardState.requireCloudSync = (connectionMode == .cloudVerified)
 
-                        // Extract username from folder name
                         let detectedUsername = String(protonFolder.dropFirst("ProtonDrive-".count))
                         wizardState.username = detectedUsername
 
@@ -251,11 +250,9 @@ struct LoginStepView: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
 
-        // Start in CloudStorage if it exists
+        // Start in CloudStorage (NSOpenPanel handles missing dirs gracefully)
         let cloudStoragePath = NSHomeDirectory() + "/Library/CloudStorage"
-        if FileManager.default.fileExists(atPath: cloudStoragePath) {
-            panel.directoryURL = URL(fileURLWithPath: cloudStoragePath)
-        }
+        panel.directoryURL = URL(fileURLWithPath: cloudStoragePath)
 
         if panel.runModal() == .OK, let url = panel.url {
             wizardState.sourcePath = url.path
