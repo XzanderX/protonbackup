@@ -50,6 +50,7 @@ struct SyncState: Equatable {
     /// Resume a paused backup.
     mutating func resume() {
         isPaused = false
+        shouldCancel = false
     }
 
     /// Request cancellation of the current backup.

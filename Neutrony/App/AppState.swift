@@ -53,6 +53,12 @@ final class AppState: ObservableObject {
     private var volumeMountObserver: NSObjectProtocol?
     private var volumeUnmountObserver: NSObjectProtocol?
 
+    /// Grace period work item for drive disconnection events.
+    /// External HDDs can briefly disappear due to USB hiccups or power management
+    /// without actually being disconnected. We wait before reacting.
+    private var disconnectGraceWork: DispatchWorkItem?
+    private let disconnectGraceSeconds: Double = 5.0
+
     // MARK: - Initialization
 
     init() {
@@ -169,6 +175,11 @@ final class AppState: ObservableObject {
             return
         }
 
+        // Clear stale cancel/pause flags from a previous cycle
+        syncState.shouldCancel = false
+        syncState.isPaused = false
+        syncState.pausedProgress = nil
+
         logService.log(.info, category: .app, message: "Starting backup cycle...")
 
         Task {
@@ -283,10 +294,18 @@ final class AppState: ObservableObject {
     func resumeBackup() {
         guard backupState.isPaused else { return }
 
-        if let progress = syncState.pausedProgress {
-            syncState.resume()
-            backupState = .backing(progress: progress)
-            logService.log(.info, category: .backup, message: "Backup resumed")
+        syncState.resume()
+        logService.log(.info, category: .backup, message: "Backup resumed")
+
+        if syncState.isBacking {
+            // Engine is still running in its pause loop — just update UI state
+            if let progress = syncState.pausedProgress {
+                backupState = .backing(progress: progress)
+            }
+        } else {
+            // Engine has exited (e.g., drive was ejected while paused) — start fresh
+            syncState.pausedProgress = nil
+            runNow()
         }
     }
 
@@ -498,6 +517,7 @@ final class AppState: ObservableObject {
         driveMonitor.onDestinationConnected = { [weak self] volumeInfo in
             Task { @MainActor in
                 guard let self else { return }
+                self.cancelDisconnectGrace()
                 let wasDisconnected = !self.isDestinationConnected
                 self.checkDestinationAvailability()
 
@@ -509,8 +529,14 @@ final class AppState: ObservableObject {
                         self.notificationService.notifyDestinationConnected(volumeName: volumeInfo.name)
                     }
 
-                    // Auto-start backup when drive connects (if setup is complete and not already running)
-                    if self.config.setupCompleted && !self.syncState.isLocked {
+                    // Auto-start backup when drive connects
+                    if self.config.setupCompleted {
+                        if self.syncState.isLocked {
+                            // Engine stuck from before disconnect — reset and restart
+                            self.logService.log(.info, category: .driveMonitor,
+                                                message: "Resetting stale backup state on reconnect")
+                            self.syncState.resetAfterBackup()
+                        }
                         self.logService.log(.info, category: .driveMonitor,
                                             message: "Auto-starting backup on drive connect...")
                         self.runNow()
@@ -522,15 +548,7 @@ final class AppState: ObservableObject {
         driveMonitor.onDestinationDisconnected = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-
-                // Cancel any running backup when drive is ejected
-                if self.syncState.isLocked {
-                    self.logService.log(.info, category: .driveMonitor,
-                                        message: "Backup destination ejected, cancelling backup...")
-                    self.cancelBackup()
-                }
-
-                self.checkDestinationAvailability()
+                self.scheduleDisconnectGrace(source: "DiskArbitration")
             }
         }
     }
@@ -650,6 +668,7 @@ final class AppState: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self = self else { return }
 
+            self.cancelDisconnectGrace()
             let wasDisconnected = !self.isDestinationConnected
             self.checkDestinationAvailability()
 
@@ -662,8 +681,14 @@ final class AppState: ObservableObject {
                     self.notificationService.notifyDestinationConnected(volumeName: volumePath.lastPathComponent)
                 }
 
-                // Auto-start backup if setup is complete and not already running
-                if self.config.setupCompleted && !self.syncState.isLocked {
+                // Auto-start backup if setup is complete
+                if self.config.setupCompleted {
+                    if self.syncState.isLocked {
+                        // Engine stuck from before disconnect — reset and restart
+                        self.logService.log(.info, category: .driveMonitor,
+                                            message: "Resetting stale backup state on reconnect")
+                        self.syncState.resetAfterBackup()
+                    }
                     self.runNow()
                 }
             }
@@ -679,16 +704,58 @@ final class AppState: ObservableObject {
         logService.log(.info, category: .driveMonitor,
                        message: "Volume unmounted (NSWorkspace): \(volumePath.lastPathComponent)")
 
-        // Check if our destination is still available
-        let wasConnected = isDestinationConnected
-        checkDestinationAvailability()
+        scheduleDisconnectGrace(source: "NSWorkspace:\(volumePath.lastPathComponent)")
+    }
 
-        // Cancel backup if destination was disconnected
-        if wasConnected && !isDestinationConnected && syncState.isLocked {
-            logService.log(.info, category: .driveMonitor,
-                           message: "Backup destination ejected, cancelling backup...")
-            cancelBackup()
+    /// Schedule a delayed check after a disconnection event.
+    /// External HDDs can momentarily disappear due to USB bus resets, power management,
+    /// or cable issues without actually being removed. This grace period avoids
+    /// prematurely cancelling a backup for transient glitches.
+    private func scheduleDisconnectGrace(source: String) {
+        // Cancel any existing grace timer (coalesce rapid events)
+        disconnectGraceWork?.cancel()
+
+        logService.log(.info, category: .driveMonitor,
+                       message: "Drive disconnect event from \(source), waiting \(Int(disconnectGraceSeconds))s before reacting...")
+
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+
+                // Re-check: is the destination actually gone?
+                let (available, _) = self.driveMonitor.isDestinationAvailable(bookmark: self.config.destinationBookmark)
+
+                if available {
+                    self.logService.log(.info, category: .driveMonitor,
+                                        message: "Destination still available after grace period — ignoring transient disconnect")
+                    return
+                }
+
+                // Drive is truly gone — react now
+                self.logService.log(.warning, category: .driveMonitor,
+                                    message: "Destination confirmed unavailable after grace period")
+
+                if self.syncState.isLocked {
+                    self.logService.log(.info, category: .driveMonitor,
+                                        message: "Cancelling backup due to drive disconnection")
+                    self.cancelBackup()
+                }
+
+                self.checkDestinationAvailability()
+            }
         }
+
+        disconnectGraceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + disconnectGraceSeconds, execute: work)
+    }
+
+    /// Cancel any pending disconnect grace timer (e.g., drive reconnected).
+    private func cancelDisconnectGrace() {
+        guard disconnectGraceWork != nil else { return }
+        disconnectGraceWork?.cancel()
+        disconnectGraceWork = nil
+        logService.log(.info, category: .driveMonitor,
+                       message: "Disconnect grace period cancelled — drive reconnected")
     }
 
     /// Start periodic timer to check destination availability.
