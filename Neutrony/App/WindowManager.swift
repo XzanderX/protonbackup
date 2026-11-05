@@ -131,18 +131,25 @@ final class WindowManager {
 
     private func activateAndFocus(window: NSWindow) {
         // Temporarily switch to regular activation policy so the app can receive full focus
-        // This is necessary for LSUIElement (menu bar) apps to have interactive windows
         NSApp.setActivationPolicy(.regular)
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(window.contentView)
 
-        // Switch back to accessory after a short delay to hide from Dock
-        // but keep the window interactive
+        // Switch back to accessory right away so the app never lingers in the
+        // Dock or the App Switcher (Alt-Tab). Accessory windows stay fully
+        // interactive while the app is active.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            // Only switch back if we still have windows open
-            if !self.windows.values.contains(where: { $0.isVisible }) {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    /// Switch back to accessory policy once no on-screen window remains,
+    /// so a tray-only app never appears in the Dock or App Switcher (Alt-Tab).
+    func updateActivationPolicyIfIdle() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if !self.windows.values.contains(where: { $0.isVisible && !$0.isMiniaturized }) {
                 NSApp.setActivationPolicy(.accessory)
             }
         }
@@ -165,12 +172,14 @@ private class WindowCloseDelegate: NSObject, NSWindowDelegate {
             }
 
             // Switch back to accessory mode when all windows are closed
-            // This hides the app from the Dock
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                if !manager.windows.values.contains(where: { $0.isVisible }) {
-                    NSApp.setActivationPolicy(.accessory)
-                }
-            }
+            // This hides the app from the Dock and App Switcher
+            manager.updateActivationPolicyIfIdle()
+        }
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        Task { @MainActor in
+            WindowManager.shared.updateActivationPolicyIfIdle()
         }
     }
 }

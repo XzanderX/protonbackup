@@ -266,14 +266,21 @@ final class AppState: ObservableObject {
         ))
 
         do {
-            let summary = try await syncEngine.performFullSync(
-                mirrorPath: config.localMirrorPath,
-                deletionPolicy: config.deletionPolicy
-            ) { [weak self] progress in
-                Task { @MainActor in
-                    self?.backupState = .syncing(progress: progress)
+            // Run the sync off the main actor: it performs blocking local file I/O
+            // which would otherwise freeze the UI and delay termination on shutdown.
+            let engine = syncEngine
+            let mirrorPath = config.localMirrorPath
+            let deletionPolicy = config.deletionPolicy
+            let summary = try await Task.detached(priority: .utility) {
+                try await engine.performFullSync(
+                    mirrorPath: mirrorPath,
+                    deletionPolicy: deletionPolicy
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.backupState = .syncing(progress: progress)
+                    }
                 }
-            }
+            }.value
 
             config.lastSuccessfulSync = Date()
             saveConfig()
@@ -358,19 +365,26 @@ final class AppState: ObservableObject {
                 // Hybrid mode: use rclone as source of truth, copy from local when available
                 let localFolderPath = detectLocalProtonDriveFolder()
 
-                summary = try await backupEngine.performHybridBackup(
-                    localFolderPath: localFolderPath,
-                    destinationPath: destPath,
-                    deletionPolicy: config.deletionPolicy,
-                    keepVersions: config.keepVersions,
-                    pauseChecker: { [weak self] in
-                        (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                // Run the engine off the main actor: scans and copies are blocking
+                // file I/O that would freeze the UI and block shutdown.
+                let engine = backupEngine
+                let deletionPolicy = config.deletionPolicy
+                let keepVersions = config.keepVersions
+                summary = try await Task.detached(priority: .utility) {
+                    try await engine.performHybridBackup(
+                        localFolderPath: localFolderPath,
+                        destinationPath: destPath,
+                        deletionPolicy: deletionPolicy,
+                        keepVersions: keepVersions,
+                        pauseChecker: { [weak self] in
+                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                        }
+                    ) { [weak self] progress in
+                        Task { @MainActor in
+                            self?.handleBackupProgress(progress, sourcePath: localFolderPath)
+                        }
                     }
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.handleBackupProgress(progress, sourcePath: localFolderPath)
-                    }
-                }
+                }.value
             } else {
                 // Local folder mode: copy from Proton Drive app folder
                 guard let sourcePath = config.sourcePath else {
@@ -387,54 +401,70 @@ final class AppState: ObservableObject {
                     // On-demand mode: download cloud-only files as needed, optionally offload after
                     // This respects user's Proton Drive sync settings
                     logService.log(.info, category: .backup, message: "Using on-demand backup mode with offload=\(config.offloadAfterBackup)")
-                    summary = try await backupEngine.performOnDemandBackup(
-                        sourcePath: sourcePath,
-                        destinationPath: destPath,
-                        deletionPolicy: config.deletionPolicy,
-                        keepVersions: config.keepVersions,
-                        offloadAfterBackup: config.offloadAfterBackup,
-                        pauseChecker: { [weak self] in
-                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
-                        },
-                        cancelChecker: { [weak self] in
-                            self?.syncState.shouldCancel ?? false
+                    let engine = backupEngine
+                    let deletionPolicy = config.deletionPolicy
+                    let keepVersions = config.keepVersions
+                    let offloadAfterBackup = config.offloadAfterBackup
+                    summary = try await Task.detached(priority: .utility) {
+                        try await engine.performOnDemandBackup(
+                            sourcePath: sourcePath,
+                            destinationPath: destPath,
+                            deletionPolicy: deletionPolicy,
+                            keepVersions: keepVersions,
+                            offloadAfterBackup: offloadAfterBackup,
+                            pauseChecker: { [weak self] in
+                                (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                            },
+                            cancelChecker: { [weak self] in
+                                self?.syncState.shouldCancel ?? false
+                            }
+                        ) { [weak self, sourcePath] progress in
+                            Task { @MainActor in
+                                self?.handleBackupProgress(progress, sourcePath: sourcePath)
+                            }
                         }
-                    ) { [weak self, sourcePath] progress in
-                        Task { @MainActor in
-                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
-                        }
-                    }
+                    }.value
                 } else if config.requireCloudSync {
                     // Cloud-verified mode: only backup files confirmed synced with cloud
-                    summary = try await backupEngine.performCloudVerifiedBackup(
-                        sourcePath: sourcePath,
-                        destinationPath: destPath,
-                        deletionPolicy: config.deletionPolicy,
-                        keepVersions: config.keepVersions,
-                        requireSync: true,
-                        pauseChecker: { [weak self] in
-                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                    let engine = backupEngine
+                    let deletionPolicy = config.deletionPolicy
+                    let keepVersions = config.keepVersions
+                    summary = try await Task.detached(priority: .utility) {
+                        try await engine.performCloudVerifiedBackup(
+                            sourcePath: sourcePath,
+                            destinationPath: destPath,
+                            deletionPolicy: deletionPolicy,
+                            keepVersions: keepVersions,
+                            requireSync: true,
+                            pauseChecker: { [weak self] in
+                                (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                            }
+                        ) { [weak self, sourcePath] progress in
+                            Task { @MainActor in
+                                self?.handleBackupProgress(progress, sourcePath: sourcePath)
+                            }
                         }
-                    ) { [weak self, sourcePath] progress in
-                        Task { @MainActor in
-                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
-                        }
-                    }
+                    }.value
                 } else {
                     // Simple local backup: copy all local files without sync verification
-                    summary = try await backupEngine.performBackup(
-                        sourcePath: sourcePath,
-                        destinationPath: destPath,
-                        deletionPolicy: config.deletionPolicy,
-                        keepVersions: config.keepVersions,
-                        pauseChecker: { [weak self] in
-                            (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                    let engine = backupEngine
+                    let deletionPolicy = config.deletionPolicy
+                    let keepVersions = config.keepVersions
+                    summary = try await Task.detached(priority: .utility) {
+                        try await engine.performBackup(
+                            sourcePath: sourcePath,
+                            destinationPath: destPath,
+                            deletionPolicy: deletionPolicy,
+                            keepVersions: keepVersions,
+                            pauseChecker: { [weak self] in
+                                (self?.syncState.isPaused ?? false) || (self?.syncState.shouldCancel ?? false)
+                            }
+                        ) { [weak self, sourcePath] progress in
+                            Task { @MainActor in
+                                self?.handleBackupProgress(progress, sourcePath: sourcePath)
+                            }
                         }
-                    ) { [weak self, sourcePath] progress in
-                        Task { @MainActor in
-                            self?.handleBackupProgress(progress, sourcePath: sourcePath)
-                        }
-                    }
+                    }.value
                 }
             }
 
@@ -444,18 +474,23 @@ final class AppState: ObservableObject {
             // Create point-in-time capture if configured
             if config.snapshotMode != .disabled {
                 do {
-                    let captureName = try snapshotManager.createSnapshot(
-                        backupRoot: destPath, mode: config.snapshotMode)
+                    // APFS clone can take a long time on large backups — keep it off the main actor
+                    let snapshotMgr = snapshotManager
+                    let snapshotMode = config.snapshotMode
+                    let retentionDays = config.snapshotRetentionDays
+                    let captureName = try await Task.detached(priority: .utility) {
+                        try snapshotMgr.createSnapshot(backupRoot: destPath, mode: snapshotMode)
+                    }.value
                     if let name = captureName {
                         logService.log(.info, category: .history,
                                        message: "Point-in-time capture created: \(name)")
                     }
 
                     // Purge old captures if retention is configured
-                    if config.snapshotRetentionDays > 0 && config.snapshotMode == .apfsClone {
-                        let purged = try snapshotManager.purgeOldClones(
-                            backupRoot: destPath,
-                            olderThanDays: config.snapshotRetentionDays)
+                    if retentionDays > 0 && snapshotMode == .apfsClone {
+                        let purged = try await Task.detached(priority: .utility) {
+                            try snapshotMgr.purgeOldClones(backupRoot: destPath, olderThanDays: retentionDays)
+                        }.value
                         if purged > 0 {
                             logService.log(.info, category: .history,
                                            message: "Purged \(purged) old capture(s)")
